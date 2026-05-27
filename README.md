@@ -63,6 +63,22 @@ pio run -t upload
 - `builder/frameworks/ambsdk.py`: Framework-discovery stub.
 - `boards/<soc>.json`: Per-SoC board manifests.
 
+## PIO feature support — at a glance
+
+| Feature | v0.1 | Notes |
+|---|:---:|---|
+| `pio run` (build) | ✅ | RTL8721F verified end-to-end |
+| `pio run -t upload` | ✅ | Local + remote-serial (`board_upload.remote_server`) |
+| `pio run -t clean` | 🟡 | Wraps `ameba.py clean`, doesn't sweep `.pio/` cache |
+| `pio device monitor` | 🔴 | Planned v0.2 (~50 LoC) |
+| `pio run -t menuconfig` | 🔴 | Planned v0.2 (~30 LoC) |
+| **VSCode IntelliSense** | 🔴 | Planned v0.2 — `compile_commands.json` export |
+| `pio debug` (GDB) | 🟡 | Stubbed in `platform.py`, not yet hardware-verified |
+| `pio test` (unity) | 🔴 | v1.0+ |
+| `pio lib install` / `lib_deps` | ❌ | **Intentionally not supported** — see [ARCH.md §3.4](./ARCH.md#34-pio-lib-install--永远不做) |
+
+For the full architecture-boundary comparison against `platform-espressif32`, including the design rationale, the IntelliSense gap, and the v0.2 roadmap, **read [`ARCH.md`](./ARCH.md)**.
+
 ## License
 
 Apache-2.0 (matches the upstream PlatformIO ecosystem).

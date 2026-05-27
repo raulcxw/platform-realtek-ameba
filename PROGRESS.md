@@ -108,6 +108,9 @@ PIO upload_* 选项透传矩阵：
 | **端到端入口** | `subprocess.call([venv_python, "ameba.py", "build"])` | SCons Builder + Action graph | SCons 跟 ameba.py 内部的 cmake 树两套依赖系统并存会冲突；shell 调最干净 |
 | **Glue 代码量** | ~250 LoC | espidf.py 的 ~2300 LoC | 9x 精简，全靠"不重写上游 cmake" |
 
+> 📐 **架构边界与能力对比**（与 platform-espressif32 的精确对照、PIO 标准功能可用性矩阵、未来路线图）：详见 [`ARCH.md`](./ARCH.md)。
+> 那份文档对**这次设计的代价**做了诚实陈述——黑盒委托换来 4× 代码精简，代价是 IntelliSense / monitor / menuconfig 等 PIO 高阶功能 v0.1 暂未支持，v0.2 计划补齐。
+
 ---
 
 ## 🐞 这次踩的 4 个坑（已在 skill 沉淀）
