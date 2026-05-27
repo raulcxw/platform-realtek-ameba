@@ -1,0 +1,4 @@
+# Kconfig — project-level Kconfig declarations.
+# See https://aiot.realmcu.com/en/latest/rtos/sdk/sdk_config/index.html
+# for the full Ameba menuconfig schema. This file can declare custom
+# options that show up under the "Application" menu.

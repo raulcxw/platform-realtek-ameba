@@ -23,3 +23,8 @@ Thumbs.db
 examples/*/.pio/
 build_RTL*/
 soc_info.json
+examples/*/compile_commands.json
+examples/*/app_example/_pio_src_fragment.cmake
+
+# Toolchain cache (auto-fetched by SDK on first build)
+.cache/

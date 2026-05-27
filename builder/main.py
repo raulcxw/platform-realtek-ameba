@@ -5,26 +5,54 @@
 
 Wires PlatformIO's ``pio run`` / ``pio run -t upload`` / ``pio run -t clean``
 / ``pio run -t menuconfig`` / ``pio device monitor`` targets to the upstream
-``ameba.py`` CLI. We deliberately do NOT redefine the CMake build graph --
-the SDK already owns it and changes between SoC generations.
+``ameba.py`` CLI.
 
-v0.2 additions on top of v0.1:
+v0.3 architectural shift (EXTERN_DIR mode):
+  ``ameba.py build`` is now invoked with ``cwd=$PROJECT_DIR`` instead of
+  ``cwd=$SDK_DIR``. The SDK auto-detects this as an "external project" and
+  passes ``-DEXTERN_DIR=<PROJECT_DIR>`` to its cmake invocation. This:
+
+  * Makes user code in ``app_example/`` (the SDK's required user code dir)
+    AND optional ``src/`` actually compile -- previously only SDK examples
+    compiled.
+  * Routes GCC compile errors with absolute paths under PROJECT_DIR so
+    IDEs (VSCode/CLion) can jump to the correct line.
+  * Puts ``build_<SOC>/`` under PROJECT_DIR, never touching the SDK tree
+    (preserves the "SDK 0 modifications" hard contract).
+  * Allows ``compile_commands.json`` for IntelliSense to live next to the
+    user's code.
+
+The PIO project layout for v0.3 looks like:
+
+    my-pio-project/
+    ├── platformio.ini
+    ├── CMakeLists.txt          # 1 line: ameba_add_subdirectory(app_example)
+    ├── prj.conf
+    ├── Kconfig
+    ├── src/                    # optional, PIO-standard user code
+    │   └── main.c
+    └── app_example/            # required by SDK; provides app_example()
+        ├── CMakeLists.txt
+        └── app_main.c
+
+We deliberately do NOT redefine the cmake build graph -- the SDK already
+owns it and changes between SoC generations.
+
+v0.2 features carried forward:
   * compile_commands.json export (VSCode IntelliSense)
   * pio device monitor -> ameba.py monitor
   * pio run -t menuconfig -> ameba.py menuconfig
-  * pio run -t clean cleans .pio/ as well
-  * Per-env soc_info.json isolation so 'pio run -e a -e b' is safe.
+  * pio run -t clean cleans .pio/ + build_<SOC>/ as well
+  * Per-env TARGET_SOC isolation so 'pio run -e a -e b' is safe.
 """
 
 import os
 import shutil
 import sys
-import tempfile
-from os.path import isdir, join
+from os.path import isdir, isfile, join
 
 from SCons.Script import (
     AlwaysBuild,
-    Builder,
     Default,
     DefaultEnvironment,
 )
@@ -41,7 +69,7 @@ board = env.BoardConfig()
 def _find_sdk_dir():
     """Locate the ameba-rtos checkout.
 
-    v0.1 strategy: not distributed as a PIO package. Prefer
+    v0.3 strategy: still no PIO-distributed package. Prefer
     ``$AMEBA_SDK_DIR``, then a few well-known dev locations, then fail
     with a clear message.
     """
@@ -52,7 +80,7 @@ def _find_sdk_dir():
         os.path.expanduser("~/.platformio/packages/framework-ambsdk"),
     ]
     for candidate in candidates:
-        if candidate and isdir(candidate) and os.path.isfile(join(candidate, "ameba.py")):
+        if candidate and isdir(candidate) and isfile(join(candidate, "ameba.py")):
             return candidate
     raise FileNotFoundError(
         "ameba-rtos SDK not found. Set AMEBA_SDK_DIR to a local checkout "
@@ -69,7 +97,7 @@ def _find_prebuilts_dir():
         os.path.expanduser("~/.platformio/packages/tool-ameba-prebuilts"),
     ]
     for candidate in candidates:
-        if candidate and isdir(candidate) and os.path.isfile(join(candidate, "setenv.sh")):
+        if candidate and isdir(candidate) and isfile(join(candidate, "setenv.sh")):
             return candidate
     return None  # SDK will still work; just relies on system cmake/ninja
 
@@ -77,33 +105,151 @@ def _find_prebuilts_dir():
 SDK_DIR = _find_sdk_dir()
 PREBUILTS_DIR = _find_prebuilts_dir()
 SOC = board.get("build.soc", "RTL8721F").upper()
+PROJECT_DIR = env.subst("$PROJECT_DIR")
 PROJECT_BUILD_DIR = env.subst("$BUILD_DIR")
 ENV_NAME = env.subst("$PIOENV") or "default"
 
-
-# -----------------------------------------------------------------------------
-# Per-env soc_info.json isolation (v0.2 #5: multi-env safety)
-# -----------------------------------------------------------------------------
-# Background: ``ameba.py soc <SOC>`` writes ``${SDK_DIR}/soc_info.json``.
-# When two PIO envs run concurrently (`pio run -e rtl8721f -e rtl8730e`) they
-# stomp on each other. We sidestep this by giving each env its own copy of
-# soc_info.json placed at a per-env CWD, then telling ameba_soc_utils where
-# to read/write via the AMEBA_SOC_INFO_FILE env var (read by SocManager when
-# present).
-#
-# Note: ameba_soc_utils.py reads SOC name first from $TARGET_SOC, then from
-# soc_info.json. So we set TARGET_SOC=<SOC> directly, which is even simpler
-# and removes the need to write soc_info.json from PIO at all. ameba.py
-# build still works because TARGET_SOC takes precedence.
-def _isolated_workdir():
-    """A per-env scratch dir to keep ameba.py invocations isolated."""
-    workdir = join(PROJECT_BUILD_DIR, "ambsdk-workdir")
-    os.makedirs(workdir, exist_ok=True)
-    return workdir
+# v0.3: EXTERN_DIR mode means build_<SOC>/ lives under PROJECT_DIR, not SDK_DIR.
+EXTERN_BUILD_DIR = join(PROJECT_DIR, f"build_{SOC}")
 
 
 # -----------------------------------------------------------------------------
-# Environment for `ameba.py *`
+# v0.3: External project layout validation + auto-bootstrap
+# -----------------------------------------------------------------------------
+def _ensure_extern_project_layout():
+    """Verify the PIO project has the SDK's external-project structure.
+
+    Required minimum (per SDK's ``ameba.py new-project`` template):
+      * ``CMakeLists.txt`` at PROJECT_DIR (entry: ``ameba_add_subdirectory(app_example)``)
+      * ``app_example/CMakeLists.txt``  (registers user sources)
+      * ``app_example/app_main.c``      (provides ``void app_example(void)``)
+
+    Optional but nice:
+      * ``Kconfig``, ``prj.conf``      (Kconfig overlay for the project)
+      * ``src/*.[c|cpp|h]``            (PIO-standard user code; bridged below)
+
+    If required files are missing, print a clear message pointing at
+    ``ameba.py new-project`` and at our example template under examples/.
+    """
+    required = [
+        ("CMakeLists.txt", "Top-level cmake entry. 1 line is enough:\n"
+                            "    ameba_add_subdirectory(app_example)"),
+        ("app_example/CMakeLists.txt",
+         "Per-app sources list. See examples/ameba-blink/app_example/CMakeLists.txt"),
+        ("app_example/app_main.c",
+         "Must define `void app_example(void)`. SDK calls this from main."),
+    ]
+    missing = [(p, hint) for (p, hint) in required if not isfile(join(PROJECT_DIR, p))]
+    if not missing:
+        return
+
+    print("[ambsdk] ERROR: this PIO project is not laid out as an Ameba external project.")
+    print(f"[ambsdk] PROJECT_DIR={PROJECT_DIR}")
+    print("[ambsdk] missing required files:")
+    for p, hint in missing:
+        print(f"[ambsdk]   - {p}")
+        for line in hint.splitlines():
+            print(f"[ambsdk]       {line}")
+    print("[ambsdk] Quick fix:")
+    print(f"[ambsdk]   1. cd {PROJECT_DIR} && \\")
+    print(f"[ambsdk]      python {SDK_DIR}/ameba.py new-project . -a app   "
+          "(creates the skeleton)")
+    print(f"[ambsdk]   2. or copy examples/ameba-blink/* into {PROJECT_DIR}/")
+    env.Exit(1)
+
+
+def _bridge_src_into_app_example():
+    """Make user-written ``src/*.[c|cpp]`` actually get compiled.
+
+    PIO convention: users put code in ``src/``.  Ameba SDK convention:
+    code in ``app_example/`` is registered via that dir's CMakeLists.txt.
+
+    Bridge strategy: at build configure time, append every ``src/**/*.c``
+    (and ``.cpp``) into ``app_example/CMakeLists.txt`` via a generated
+    fragment file ``app_example/_pio_src_fragment.cmake`` that we control.
+
+    The fragment is included by the user's app_example/CMakeLists.txt
+    via ``include(_pio_src_fragment.cmake OPTIONAL)`` (added by our
+    project template). If the user removes that include, src/ bridging
+    is silently disabled -- their choice.
+
+    We never touch the user's CMakeLists.txt directly, so this stays
+    additive and reversible.
+    """
+    src_dir = join(PROJECT_DIR, "src")
+    fragment = join(PROJECT_DIR, "app_example", "_pio_src_fragment.cmake")
+
+    if not isdir(src_dir):
+        # No src/, nothing to bridge. Remove stale fragment if present.
+        if isfile(fragment):
+            os.remove(fragment)
+        return
+
+    # Collect all user source files under src/ (recursive)
+    sources = []
+    for root, _dirs, files in os.walk(src_dir):
+        for f in files:
+            if f.lower().endswith((".c", ".cpp", ".cc", ".cxx", ".s", ".S")):
+                full = join(root, f)
+                # cmake on Linux/WSL handles forward slashes fine
+                sources.append(full.replace(os.sep, "/"))
+
+    if not sources:
+        if isfile(fragment):
+            os.remove(fragment)
+        return
+
+    # Find include dirs: any directory under src/ that contains .h files,
+    # plus src/ itself.
+    include_dirs = {src_dir.replace(os.sep, "/")}
+    for root, _dirs, files in os.walk(src_dir):
+        if any(f.lower().endswith((".h", ".hpp", ".hh", ".hxx")) for f in files):
+            include_dirs.add(root.replace(os.sep, "/"))
+
+    lines = [
+        "# Auto-generated by platform-amebartos. Do not edit.",
+        "# Bridges PIO's src/ directory into the Ameba app_example library.",
+        "# Regenerated on every `pio run`.",
+        "",
+        "ameba_list_append(private_sources",
+    ]
+    for s in sorted(sources):
+        lines.append(f"    {s}")
+    lines.append(")")
+    lines.append("")
+
+    if include_dirs:
+        # NOTE: do not call target_include_directories() here -- the
+        # CURRENT_LIB_NAME variable is not yet defined when this fragment
+        # is include()-d (it is set later by ameba_add_internal_library).
+        # Instead we emit a CMake list variable that the user's
+        # CMakeLists.txt picks up after the library is created.
+        lines.append("# Include dirs collected from src/ — applied below by")
+        lines.append("# the user's app_example/CMakeLists.txt after the library exists.")
+        lines.append("set(_pio_src_include_dirs")
+        for d in sorted(include_dirs):
+            lines.append(f"    {d}")
+        lines.append(")")
+        lines.append("")
+
+    os.makedirs(os.path.dirname(fragment), exist_ok=True)
+    new_content = "\n".join(lines)
+    # Only rewrite if changed -- avoids needless cmake re-configure
+    if isfile(fragment):
+        try:
+            with open(fragment, "r") as fh:
+                if fh.read() == new_content:
+                    return
+        except OSError:
+            pass
+    with open(fragment, "w") as fh:
+        fh.write(new_content)
+    print(f"[ambsdk] bridged {len(sources)} source file(s) from src/ -> "
+          f"app_example/_pio_src_fragment.cmake")
+
+
+# -----------------------------------------------------------------------------
+# Environment for `ameba.py *` subprocesses
 # -----------------------------------------------------------------------------
 def _make_sdk_env():
     """Build os.environ for subprocess calls into ameba.py.
@@ -114,6 +260,8 @@ def _make_sdk_env():
       * TARGET_SOC -> bypasses soc_info.json; per-env safe
       * VIRTUAL_ENV + PATH -> SDK venv first (json5/elftools), then
         prebuilts cmake/ninja, then system PATH
+      * EXTRA_CFLAGS / EXTRA_CXXFLAGS -> PIO build_flags propagated to
+        the SDK cmake invocation (v0.3 #5)
     """
     sdk_env = os.environ.copy()
 
@@ -122,9 +270,8 @@ def _make_sdk_env():
     )
     os.makedirs(sdk_env["RTK_TOOLCHAIN_DIR"], exist_ok=True)
 
-    # v0.2 #5: TARGET_SOC env var takes precedence over soc_info.json
-    # inside ameba_soc_utils.SocManager.parse_soc_info(). This keeps
-    # multi-env runs from racing on the same soc_info.json file.
+    # TARGET_SOC env var takes precedence over soc_info.json inside
+    # ameba_soc_utils.SocManager.parse_soc_info(). Multi-env safe.
     sdk_env["TARGET_SOC"] = SOC
 
     path_parts = []
@@ -140,92 +287,106 @@ def _make_sdk_env():
             os.pathsep.join(path_parts) + os.pathsep + sdk_env.get("PATH", "")
         )
 
+    # v0.3 #5: pass build_flags through to the SDK cmake.
+    # PIO's BUILD_FLAGS / CPPDEFINES come from platformio.ini's build_flags.
+    # We forward them as EXTRA_CFLAGS so the SDK toolchain sees them.
+    extra_cflags = []
+    raw_flags = env.subst("$BUILD_FLAGS").strip()
+    if raw_flags:
+        extra_cflags.append(raw_flags)
+    if extra_cflags:
+        existing = sdk_env.get("EXTRA_CFLAGS", "").strip()
+        merged = (" ".join(extra_cflags) + (" " + existing if existing else "")).strip()
+        sdk_env["EXTRA_CFLAGS"] = merged
+        sdk_env["EXTRA_CXXFLAGS"] = merged
+
     return sdk_env
 
 
 def _ameba_python():
     """Path to the python interpreter ameba.py expects (SDK venv's)."""
     venv_py = join(SDK_DIR, ".venv", "bin", "python3")
-    if os.path.isfile(venv_py):
+    if isfile(venv_py):
         return venv_py
     return "python3"
 
 
-def _ameba_py_args(action, soc=SOC, app=None, clean=False, upload_opts=None,
+def _ameba_py_args(action, soc=SOC, clean=False, upload_opts=None,
                    menuconfig_opts=None, monitor_opts=None):
-    """Translate PIO target -> ameba.py argv."""
+    """Translate PIO target -> ameba.py argv.
+
+    Returns a list of subprocess argv lists to run in order.
+    """
     py = _ameba_python()
-    args = [py, join(SDK_DIR, "ameba.py")]
+    base = [py, join(SDK_DIR, "ameba.py")]
 
     if action == "build":
-        # With TARGET_SOC env var set, `ameba.py soc` is a no-op but still
-        # safe to run (it just writes the same SOC name back).
-        return [
-            args + ["soc", soc],
-            args + ["build"] + (["-c"] if clean else []),
-        ]
+        # `ameba.py build <SOC>` accepts SOC as positional. With cwd=PROJECT_DIR
+        # the SDK auto-injects -DEXTERN_DIR=PROJECT_DIR. No `soc` step needed
+        # because TARGET_SOC env + positional arg both pin the choice.
+        cmd = base + ["build", soc] + (["-c"] if clean else [])
+        return [cmd]
     elif action == "flash":
-        flash_args = args + ["flash"]
+        # flash needs to know the build artefacts location, which in
+        # EXTERN_DIR mode is ${PROJECT_DIR}/build_<SOC>/. ameba.py flash
+        # auto-discovers this when run from PROJECT_DIR.
+        flash_args = base + ["flash"]
         if upload_opts:
             for k, v in upload_opts.items():
                 if v is None or v is False:
                     continue
-                flash_args.append(f"--{k}" if k.startswith("-") else f"--{k.replace('_', '-')}")
+                flash_args.append(f"--{k}" if k.startswith("-")
+                                  else f"--{k.replace('_', '-')}")
                 if v is not True:
                     flash_args.append(str(v))
-        return [args + ["soc", soc], flash_args]
+        return [flash_args]
     elif action == "clean":
-        return [args + ["soc", soc], args + ["clean", soc]]
+        return [base + ["clean", soc]]
     elif action == "menuconfig":
-        # ameba.py menuconfig needs SoC selected; passes through to
-        # tools/scripts/menuconfig.py which is interactive (Kconfig UI).
-        mc_args = args + ["menuconfig", soc]
+        mc_args = base + ["menuconfig", soc]
         if menuconfig_opts:
             mc_args.extend(menuconfig_opts)
-        return [args + ["soc", soc], mc_args]
+        return [mc_args]
     elif action == "monitor":
-        mon_args = args + ["monitor"]
+        mon_args = base + ["monitor"]
         if monitor_opts:
             for k, v in monitor_opts.items():
                 if v is None or v is False:
                     continue
-                mon_args.append(f"--{k.replace('_', '-')}" if not k.startswith("-") else k)
+                mon_args.append(f"--{k.replace('_', '-')}"
+                                if not k.startswith("-") else k)
                 if v is not True:
                     mon_args.append(str(v))
-        return [args + ["soc", soc], mon_args]
+        return [mon_args]
     else:
         raise ValueError(f"unknown action {action!r}")
 
 
 # -----------------------------------------------------------------------------
-# v0.2 #1: compile_commands.json export (VSCode IntelliSense)
+# compile_commands.json export (VSCode IntelliSense)
 # -----------------------------------------------------------------------------
 def _export_compile_commands():
     """Copy cmake's compile_commands.json into PIO BUILD_DIR + project root.
 
-    cmake auto-generates this in build_<SOC>/build/compile_commands.json.
-    VSCode (with C/C++ extension or clangd) auto-discovers the file in:
-      1. <project_root>/compile_commands.json   (preferred)
-      2. <project_root>/.pio/build/<env>/compile_commands.json
-
-    We write to both so users get IntelliSense regardless of which
-    extension's heuristic they're using.
+    v0.3: cmake now writes to ``${PROJECT_DIR}/build_<SOC>/build/compile_commands.json``
+    instead of inside SDK_DIR.
     """
-    src = join(SDK_DIR, f"build_{SOC}", "build", "compile_commands.json")
-    if not os.path.isfile(src):
-        print(f"[ambsdk] compile_commands.json not found at {src}; skipping IntelliSense export")
+    src = join(EXTERN_BUILD_DIR, "build", "compile_commands.json")
+    if not isfile(src):
+        print(f"[ambsdk] compile_commands.json not found at {src}; "
+              "skipping IntelliSense export")
         return
 
-    project_dir = env.subst("$PROJECT_DIR")
     targets = [
         join(PROJECT_BUILD_DIR, "compile_commands.json"),  # PIO standard
-        join(project_dir, "compile_commands.json"),         # editor root
+        join(PROJECT_DIR, "compile_commands.json"),         # editor root
     ]
     for dst in targets:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copyfile(src, dst)
-    print(f"[ambsdk] exported compile_commands.json ({os.path.getsize(src)//1024} KB) -> "
-          f"{project_dir}/compile_commands.json (+ .pio/build/{ENV_NAME}/)")
+    print(f"[ambsdk] exported compile_commands.json "
+          f"({os.path.getsize(src)//1024} KB) -> "
+          f"{PROJECT_DIR}/compile_commands.json (+ .pio/build/{ENV_NAME}/)")
 
 
 # -----------------------------------------------------------------------------
@@ -234,29 +395,38 @@ def _export_compile_commands():
 def build_firmware(*_args, **_kwargs):
     import subprocess
 
+    _ensure_extern_project_layout()
+    _bridge_src_into_app_example()
+
     sdk_env = _make_sdk_env()
     cmd_chain = _ameba_py_args("build", soc=SOC)
 
-    print(f"[ambsdk] building SoC={SOC} (env={ENV_NAME}), SDK={SDK_DIR}")
-    print(f"[ambsdk] RTK_TOOLCHAIN_DIR={sdk_env['RTK_TOOLCHAIN_DIR']}")
-    print(f"[ambsdk] TARGET_SOC={sdk_env['TARGET_SOC']}")
+    print(f"[ambsdk] building SoC={SOC} (env={ENV_NAME})")
+    print(f"[ambsdk] PROJECT_DIR={PROJECT_DIR}  (= EXTERN_DIR)")
+    print(f"[ambsdk] SDK_DIR={SDK_DIR}")
+    print(f"[ambsdk] build outputs -> {EXTERN_BUILD_DIR}/")
+    if sdk_env.get("EXTRA_CFLAGS"):
+        print(f"[ambsdk] EXTRA_CFLAGS={sdk_env['EXTRA_CFLAGS']!r}")
 
     for cmd in cmd_chain:
-        print(f"[ambsdk] $ {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=SDK_DIR, env=sdk_env)
+        print(f"[ambsdk] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+        # v0.3 KEY CHANGE: cwd=PROJECT_DIR, not SDK_DIR.
+        # SDK detects "external project" mode and auto-passes -DEXTERN_DIR.
+        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             print(f"[ambsdk] command failed (rc={rc})")
             env.Exit(rc)
 
-    # Copy firmware into PIO BUILD_DIR
-    src_app = join(SDK_DIR, f"build_{SOC}", "app.bin")
+    # Copy firmware into PIO BUILD_DIR (v0.3: from PROJECT_DIR/build_<SOC>/)
+    src_app = join(EXTERN_BUILD_DIR, "app.bin")
     dst_app = join(PROJECT_BUILD_DIR, "firmware.bin")
-    if os.path.isfile(src_app):
+    if isfile(src_app):
         os.makedirs(PROJECT_BUILD_DIR, exist_ok=True)
         shutil.copyfile(src_app, dst_app)
         print(f"[ambsdk] copied {src_app} -> {dst_app}")
+    else:
+        print(f"[ambsdk] WARNING: app.bin not found at {src_app}")
 
-    # v0.2 #1: export compile_commands.json
     _export_compile_commands()
 
 
@@ -264,7 +434,6 @@ def upload_firmware(*_args, **_kwargs):
     import subprocess
 
     sdk_env = _make_sdk_env()
-
     upload_opts = {}
 
     port = env.subst("$UPLOAD_PORT") or board.get("upload.port", "")
@@ -304,44 +473,29 @@ def upload_firmware(*_args, **_kwargs):
 
     print(f"[ambsdk] uploading SoC={SOC}, opts={upload_opts}")
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
-        print(f"[ambsdk] $ {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=SDK_DIR, env=sdk_env)
+        print(f"[ambsdk] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+        # v0.3: flash also runs from PROJECT_DIR (where build_<SOC>/ lives)
+        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             env.Exit(rc)
 
 
-# -----------------------------------------------------------------------------
-# v0.2 #2: pio device monitor
-# -----------------------------------------------------------------------------
-# We do this by overriding $MONITOR_PORT etc. so that PIO's built-in
-# `pio device monitor` works. But ameba.py monitor has its own remote-serial
-# feature that PIO's stock monitor doesn't speak. So we *also* expose a
-# custom SCons target ``monitor`` that shells out to ameba.py monitor.
 def serial_monitor(*_args, **_kwargs):
     import subprocess
 
     sdk_env = _make_sdk_env()
-
     monitor_opts = {}
 
-    port = env.subst("$MONITOR_PORT") or env.subst("$UPLOAD_PORT") or board.get("upload.port", "")
+    port = (env.subst("$MONITOR_PORT") or env.subst("$UPLOAD_PORT")
+            or board.get("upload.port", ""))
     if port:
         monitor_opts["port"] = port
 
-    # Ameba's LogUART runs at 1500000 baud by default
-    # (LOGUART_BAUDRATE is hard-coded to 1500000 across the SDK).
-    # If the user did not override it, prefer this over PIO's default of 9600.
-    # Note: monitor_speed is a built-in PIO option (required integer); we
-    # access it through env.subst("$MONITOR_SPEED") which returns "" when
-    # unset. GetProjectOption with a "" default would trigger PIO's integer
-    # validator on the unset case, so we don't fall back to it here.
+    # Ameba LogUART defaults to 1500000 baud.
     speed = env.subst("$MONITOR_SPEED") or "1500000"
     if speed:
         monitor_opts["baudrate"] = speed
 
-    # Reuse upload's remote_server/remote_password (typical setup: same
-    # remote serial bridge for both flash and monitor). Custom monitor-only
-    # overrides MUST use the 'custom_' prefix so PIO accepts them.
     remote_server = (
         env.GetProjectOption("board_upload.remote_server", None)
         or env.GetProjectOption("custom_monitor_remote_server", None)
@@ -358,14 +512,11 @@ def serial_monitor(*_args, **_kwargs):
     if remote_password:
         monitor_opts["remote-password"] = remote_password
 
-    # Optional flags (use 'custom_' prefix per PIO's CUSTOM_OPTION_PREFIXES)
-    # custom_monitor_reset: trigger soft reset (send 'reboot') then wait for
-    # ROM:[ to start dumping output -- useful in CI / non-interactive runs.
-    if env.GetProjectOption("custom_monitor_reset", "no").lower() in ("yes", "true", "1"):
-        monitor_opts["-reset"] = True  # ameba.py uses single-dash -reset
+    if env.GetProjectOption("custom_monitor_reset", "no").lower() in (
+        "yes", "true", "1"
+    ):
+        monitor_opts["-reset"] = True
 
-    # custom_monitor_no_console: disable prompt-toolkit TUI; read commands
-    # from stdin pipe. ALWAYS ON when stdin is not a TTY (CI, log capture).
     if not sys.stdin.isatty() or env.GetProjectOption(
         "custom_monitor_no_console", "no"
     ).lower() in ("yes", "true", "1"):
@@ -376,18 +527,16 @@ def serial_monitor(*_args, **_kwargs):
           "is probably idle -- set 'custom_monitor_reset = yes' in [env] to "
           "force a soft reset and capture boot log)")
     for cmd in _ameba_py_args("monitor", soc=SOC, monitor_opts=monitor_opts):
-        print(f"[ambsdk] $ {' '.join(cmd)}")
-        # subprocess.call here blocks until user exits the monitor (Ctrl-C).
-        rc = subprocess.call(cmd, cwd=SDK_DIR, env=sdk_env)
+        print(f"[ambsdk] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             env.Exit(rc)
 
 
-# -----------------------------------------------------------------------------
-# v0.2 #3: pio run -t menuconfig
-# -----------------------------------------------------------------------------
 def run_menuconfig(*_args, **_kwargs):
     import subprocess
+
+    _ensure_extern_project_layout()  # menuconfig also needs proper layout
 
     sdk_env = _make_sdk_env()
     print(f"[ambsdk] menuconfig SoC={SOC}")
@@ -395,38 +544,39 @@ def run_menuconfig(*_args, **_kwargs):
           "ameba.py menuconfig's curses UI)")
 
     for cmd in _ameba_py_args("menuconfig", soc=SOC):
-        print(f"[ambsdk] $ {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=SDK_DIR, env=sdk_env)
+        print(f"[ambsdk] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             env.Exit(rc)
 
 
-# -----------------------------------------------------------------------------
-# v0.2 #4: pio run -t clean (full)
-# -----------------------------------------------------------------------------
 def clean_all(*_args, **_kwargs):
-    """Clean both ameba SDK build outputs AND PIO's .pio/ cache."""
-    import subprocess
-
+    """Clean everything: build_<SOC>/ in PROJECT_DIR, .pio/, and exported files."""
     sdk_env = _make_sdk_env()
-    print(f"[ambsdk] cleaning SoC={SOC} (SDK build_{SOC}/ + PIO BUILD_DIR)")
+    print(f"[ambsdk] cleaning SoC={SOC} ({EXTERN_BUILD_DIR} + PIO BUILD_DIR)")
 
-    # 1. clean SDK side
-    for cmd in _ameba_py_args("clean", soc=SOC):
-        print(f"[ambsdk] $ {' '.join(cmd)}")
-        subprocess.call(cmd, cwd=SDK_DIR, env=sdk_env)
+    # 1. Remove the EXTERN_DIR build tree directly. Faster + more reliable
+    #    than `ameba.py clean` which only does cmake-level cleanup.
+    if isdir(EXTERN_BUILD_DIR):
+        print(f"[ambsdk] rm -rf {EXTERN_BUILD_DIR}")
+        shutil.rmtree(EXTERN_BUILD_DIR, ignore_errors=True)
 
     # 2. clean PIO side
     if isdir(PROJECT_BUILD_DIR):
         print(f"[ambsdk] rm -rf {PROJECT_BUILD_DIR}")
         shutil.rmtree(PROJECT_BUILD_DIR, ignore_errors=True)
 
-    # 3. clean exported compile_commands.json from project root if present
-    project_dir = env.subst("$PROJECT_DIR")
-    cc = join(project_dir, "compile_commands.json")
-    if os.path.isfile(cc):
+    # 3. clean exported compile_commands.json from project root
+    cc = join(PROJECT_DIR, "compile_commands.json")
+    if isfile(cc):
         print(f"[ambsdk] rm {cc}")
         os.remove(cc)
+
+    # 4. clean the auto-generated _pio_src_fragment.cmake
+    fragment = join(PROJECT_DIR, "app_example", "_pio_src_fragment.cmake")
+    if isfile(fragment):
+        print(f"[ambsdk] rm {fragment}")
+        os.remove(fragment)
 
 
 # -----------------------------------------------------------------------------
@@ -442,7 +592,6 @@ target_upload = env.Alias(
 )
 AlwaysBuild(target_upload)
 
-# v0.2 custom SCons targets
 env.AddCustomTarget(
     name="menuconfig",
     dependencies=None,
@@ -466,7 +615,8 @@ env.AddCustomTarget(
     dependencies=None,
     actions=clean_all,
     title="Clean All (ambsdk + .pio/)",
-    description="Delete both ameba-rtos build_<SOC>/ and PIO's .pio/ cache",
+    description=f"Delete both {{PROJECT_DIR}}/build_<SOC>/ "
+                "and PIO's .pio/ cache",
 )
 
 # `pio run` default
