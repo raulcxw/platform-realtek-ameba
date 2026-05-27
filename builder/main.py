@@ -111,7 +111,7 @@ def _ameba_python():
     return "python3"
 
 
-def _ameba_py_args(action, soc=SOC, app=None, clean=False):
+def _ameba_py_args(action, soc=SOC, app=None, clean=False, upload_opts=None):
     """Translate PIO target -> ameba.py argv."""
     py = _ameba_python()
     args = [py, join(SDK_DIR, "ameba.py")]
@@ -124,7 +124,20 @@ def _ameba_py_args(action, soc=SOC, app=None, clean=False):
             args + ["build"] + (["-c"] if clean else []),
         ]
     elif action == "flash":
-        return [args + ["flash"]]
+        # SDK requires the SoC to be active before flash; soc_info.json is
+        # repo-local state that may have been clobbered by another build.
+        flash_args = args + ["flash"]
+        if upload_opts:
+            for k, v in upload_opts.items():
+                if v is None or v is False:
+                    continue
+                flash_args.append(f"--{k}" if k.startswith("-") else f"--{k.replace('_', '-')}")
+                if v is not True:
+                    flash_args.append(str(v))
+        return [
+            args + ["soc", soc],
+            flash_args,
+        ]
     elif action == "clean":
         return [args + ["clean", soc]]
     else:
@@ -166,7 +179,56 @@ def upload_firmware(*_args, **_kwargs):
     import subprocess
 
     sdk_env = _make_sdk_env()
-    for cmd in _ameba_py_args("flash", soc=SOC):
+
+    # Translate PIO upload_* options into ameba.py flash args.
+    # Supported PIO options:
+    #   upload_port             -> -p / --port (e.g. COM40, /dev/ttyUSB0)
+    #   upload_speed            -> -b / --baudrate
+    #   upload_protocol         -> selects path (default: ameba bootrom)
+    # Realtek-specific (under [env] as upload_flags or board_upload.*):
+    #   board_upload.remote_server     -> --remote-server
+    #   board_upload.remote_password   -> --remote-password
+    #   board_upload.memory_type       -> --memory-type {nor,nand,ram}
+    #   board_upload.chip_erase = yes  -> --chip-erase
+    upload_opts = {}
+
+    port = env.subst("$UPLOAD_PORT") or board.get("upload.port", "")
+    if port:
+        upload_opts["port"] = port
+
+    speed = env.subst("$UPLOAD_SPEED") or board.get("upload.speed", "")
+    if speed:
+        upload_opts["baudrate"] = speed
+
+    remote_server = (
+        env.GetProjectOption("board_upload.remote_server", None)
+        or board.get("upload.remote_server", None)
+    )
+    if remote_server:
+        upload_opts["remote-server"] = remote_server
+
+    remote_password = (
+        env.GetProjectOption("board_upload.remote_password", None)
+        or board.get("upload.remote_password", None)
+    )
+    if remote_password:
+        upload_opts["remote-password"] = remote_password
+
+    memory_type = (
+        env.GetProjectOption("board_upload.memory_type", None)
+        or board.get("upload.memory_type", None)
+    )
+    if memory_type:
+        upload_opts["memory-type"] = memory_type
+
+    chip_erase = (
+        env.GetProjectOption("board_upload.chip_erase", "no") or "no"
+    ).lower() in ("yes", "true", "1")
+    if chip_erase:
+        upload_opts["chip-erase"] = True
+
+    print(f"[ambsdk] uploading SoC={SOC}, opts={upload_opts}")
+    for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
         print(f"[ambsdk] $ {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=SDK_DIR, env=sdk_env)
         if rc != 0:
