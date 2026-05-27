@@ -113,7 +113,7 @@ PIO upload_* 选项透传矩阵：
 v0.2 在 ~120 行增量代码内补齐了 5 项关键 PIO 功能：
 
 1. **VSCode IntelliSense**：`pio run` 自动导出 cmake 生成的 `compile_commands.json`（627 条目 / 7.1 MB）到工程根 + `.pio/build/<env>/`。VSCode/clangd 自动发现，写代码补全/跳转/类型提示全部可用。
-2. **`pio run -t monitor_ambsdk`**：注册 SCons custom target 调 `ameba.py monitor`，支持远程串口（PIO 内置 monitor 不支持）。已对真硬件 COM40 / 127.0.0.1:58916 验证连接。
+2. **`pio run -t monitor_ambsdk`**：注册 SCons custom target 调 `ameba.py monitor`，支持远程串口（PIO 内置 monitor 不支持）+ `-reset` 软重启抓 boot log + `--no-console` 非交互模式（stdin 喂命令）。**端到端真验证（真硬件）**：触发软重启后捕获 57 行带时间戳 boot log（`ROM:[V1.0]` 到 `[WLAN-A] IPS in`），发 `DW 0 4` 读 0x0 内存，板子返回 `30001000 00000021 ...`（MSP 栈顶值）。完全等同本地串口体验。波特率默认设 1500000（Ameba LogUART 硬编码值）。
 3. **`pio run -t menuconfig`**：调起 `ameba.py menuconfig <SOC>` 的 curses UI，用户终端直通。
 4. **`pio run -t ambsdk-clean`**：同步清三处——SDK `build_<SOC>/`（700 个对象文件）、PIO `.pio/`、工程根 `compile_commands.json`。
 5. **多 env 并行隔离**：用 `TARGET_SOC` 环境变量绕开 `soc_info.json`（基于研究 `tools/scripts/ameba_soc_utils.py:57` 发现 SocManager 优先读 env var）。每个 env 的 subprocess 拿到自己独立的 SoC 名，互不踩。**实测铁证**：rtl8721f → rtl8730e 顺序编译，最后 SDK 根 `soc_info.json` 残留 `RTL8721F`，但 rtl8730e 的 build 正确启动 amebasmart family + asdk-10.3.1（如果没 TARGET_SOC，会按 soc_info.json 错误地编成 amebagreen2）。

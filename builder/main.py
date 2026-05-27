@@ -328,15 +328,23 @@ def serial_monitor(*_args, **_kwargs):
     if port:
         monitor_opts["port"] = port
 
-    speed = env.subst("$MONITOR_SPEED") or "115200"
+    # Ameba's LogUART runs at 1500000 baud by default
+    # (LOGUART_BAUDRATE is hard-coded to 1500000 across the SDK).
+    # If the user did not override it, prefer this over PIO's default of 9600.
+    # Note: monitor_speed is a built-in PIO option (required integer); we
+    # access it through env.subst("$MONITOR_SPEED") which returns "" when
+    # unset. GetProjectOption with a "" default would trigger PIO's integer
+    # validator on the unset case, so we don't fall back to it here.
+    speed = env.subst("$MONITOR_SPEED") or "1500000"
     if speed:
         monitor_opts["baudrate"] = speed
 
     # Reuse upload's remote_server/remote_password (typical setup: same
-    # remote serial bridge for both flash and monitor).
+    # remote serial bridge for both flash and monitor). Custom monitor-only
+    # overrides MUST use the 'custom_' prefix so PIO accepts them.
     remote_server = (
         env.GetProjectOption("board_upload.remote_server", None)
-        or env.GetProjectOption("monitor_remote_server", None)
+        or env.GetProjectOption("custom_monitor_remote_server", None)
         or board.get("upload.remote_server", None)
     )
     if remote_server:
@@ -344,13 +352,29 @@ def serial_monitor(*_args, **_kwargs):
 
     remote_password = (
         env.GetProjectOption("board_upload.remote_password", None)
-        or env.GetProjectOption("monitor_remote_password", None)
+        or env.GetProjectOption("custom_monitor_remote_password", None)
         or board.get("upload.remote_password", None)
     )
     if remote_password:
         monitor_opts["remote-password"] = remote_password
 
+    # Optional flags (use 'custom_' prefix per PIO's CUSTOM_OPTION_PREFIXES)
+    # custom_monitor_reset: trigger soft reset (send 'reboot') then wait for
+    # ROM:[ to start dumping output -- useful in CI / non-interactive runs.
+    if env.GetProjectOption("custom_monitor_reset", "no").lower() in ("yes", "true", "1"):
+        monitor_opts["-reset"] = True  # ameba.py uses single-dash -reset
+
+    # custom_monitor_no_console: disable prompt-toolkit TUI; read commands
+    # from stdin pipe. ALWAYS ON when stdin is not a TTY (CI, log capture).
+    if not sys.stdin.isatty() or env.GetProjectOption(
+        "custom_monitor_no_console", "no"
+    ).lower() in ("yes", "true", "1"):
+        monitor_opts["no-console"] = True
+
     print(f"[ambsdk] monitor SoC={SOC}, opts={monitor_opts}")
+    print("[ambsdk] (press Ctrl+C to exit; if board is silent, the firmware "
+          "is probably idle -- set 'custom_monitor_reset = yes' in [env] to "
+          "force a soft reset and capture boot log)")
     for cmd in _ameba_py_args("monitor", soc=SOC, monitor_opts=monitor_opts):
         print(f"[ambsdk] $ {' '.join(cmd)}")
         # subprocess.call here blocks until user exits the monitor (Ctrl-C).

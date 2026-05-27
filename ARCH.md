@@ -96,11 +96,11 @@ int x = wifi_init();        // 函数签名提示
 
 **已验证**：在 RTL8721F 工程跑 `pio run` 后，`compile_commands.json` 准确出现在两个位置，体积 7.1 MB（627 条目），编译器路径 `.platformio/platforms/amebartos/.cache/rtk-toolchain/asdk-12.3.1-4600/.../arm-none-eabi-gcc` 正确（VSCode/clangd 直接能用）。
 
-### 3.2 `pio device monitor` —— ✅ v0.2 已支持
+### 3.2 `pio device monitor` —— ✅ v0.2 已支持（含双向交互）
 
 每次烧完固件都要看串口输出，v0.1 时用户得手动开第二个终端跑 `python ameba.py monitor`。
 
-`ameba.py monitor` 接受跟 flash 相同的 `--remote-server`/`--port` 参数。v0.2 在 `builder/main.py` 注册了 SCons custom target：
+`ameba.py monitor` 接受跟 flash 相同的 `--remote-server`/`--port` 参数，并提供 **`-reset`**（软重启 + 抓 `ROM:[` 之后的 boot log）和 **`--no-console`**（非交互模式从 stdin 读命令喂给板子）两个关键开关。v0.2 在 `builder/main.py` 注册了 SCons custom target：
 
 ```python
 env.AddCustomTarget(
@@ -114,13 +114,25 @@ env.AddCustomTarget(
 **用法**：
 
 ```bash
-pio run -t monitor_ambsdk          # 走 [env] 里 board_upload.remote_server / upload_port
+pio run -t monitor_ambsdk          # 走 [env] 里 board_upload.* / upload_port
+
+# 在 platformio.ini 里加 custom_monitor_reset = yes 可触发软重启抓 boot log
+# 在 platformio.ini 里加 custom_monitor_no_console = yes 强制非交互
+# stdin 不是 TTY 时（CI/log capture）会自动启用 no-console
 ```
 
-或直接复用 `[env]` 里的 `board_upload.*` 配置。已对真硬件 RTL8721F EVB（COM40 / 127.0.0.1:58916 远程串口服务器）验证连接通路。
+**已端到端验证（真硬件 RTL8721F EVB / COM40 / 127.0.0.1:58916）**：
+
+1. **接收 boot log**：触发软重启后捕获 57 行带时间戳的真实串口输出，从 `ROM:[V1.0]` 到 `[WLAN-A] IPS in`，包含 KM4TZ + KM4NS 双核启动、PSRAM/Flash ID、Wi-Fi 双频初始化全过程。`Build Time: May 27 2026 22:03:38` 与我们烧入的固件编译时间戳吻合。
+
+2. **发送命令**：通过 stdin 喂 `?` 到 monitor，板子回复内置 shell 的完整帮助（`DW`/`EW`/`REBOOT`/`EFUSE`/`TICKPS` 五条命令）。再发 `DW 0 4` 读 0x00000000 处 4 个 word，板子返回 `30001000 00000021 00000031 00000035`（30001000 是 ARM MSP 栈顶，符合 Cortex-M 启动结构）。
+
+也就是说**完全等同于本地串口体验**：能看 boot log、能发命令、能读内存。
 
 > **为什么不直接接 PIO 内置的 `pio device monitor`?**  
-> PIO 的 monitor 走 pyserial 打开本机串口，**不支持 Realtek 远程串口服务器**这种 socket 协议。所以我们注册了独立的 `monitor_ambsdk` target 调上游 `ameba.py monitor`，它原生懂这个协议。
+> PIO 的 monitor 走 pyserial 打开本机串口，**不支持 Realtek 远程串口服务器**（一种 socket 协议）。所以我们注册了独立的 `monitor_ambsdk` target 调上游 `ameba.py monitor`，它原生懂这个协议。
+
+> **v0.2 关键波特率默认值**：Ameba SDK 的 LogUART 全 SoC 硬编码 `LOGUART_BAUDRATE=1500000`（搜 `component/at_cmd/atcmd_bt_mp.c:25`），不是 PIO 默认的 9600，也不是常见的 115200。`builder/main.py` 把 `monitor_speed` 默认值改成 1500000，避免新手用户连接看到一片乱码就以为坏了。
 
 ### 3.3 多 env 并行 —— ✅ v0.2 已修复
 
