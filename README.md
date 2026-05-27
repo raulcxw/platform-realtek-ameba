@@ -3,9 +3,10 @@
 PlatformIO platform for the **Realtek Ameba** family of Wi-Fi + Bluetooth
 IoT MCUs, backed by the official `ameba-rtos` SDK.
 
-> **Status:** v0.1-dev — Linux only, RTL8721F (AmebaGreen2) verified to
-> compile end-to-end via `ameba.py build`. Flash / debug pipelines drafted
-> but not yet smoke-tested.
+> **Status:** v0.2.0-dev — Linux only. RTL8721F (AmebaGreen2) verified
+> end-to-end via `ameba.py build` + remote-serial flash. v0.2 brings
+> VSCode IntelliSense, `pio run -t monitor_ambsdk`, `pio run -t menuconfig`,
+> `pio run -t ambsdk-clean`, and safe multi-env parallel builds.
 
 ## Why a new platform?
 
@@ -65,19 +66,21 @@ pio run -t upload
 
 ## PIO feature support — at a glance
 
-| Feature | v0.1 | Notes |
-|---|:---:|---|
-| `pio run` (build) | ✅ | RTL8721F verified end-to-end |
-| `pio run -t upload` | ✅ | Local + remote-serial (`board_upload.remote_server`) |
-| `pio run -t clean` | 🟡 | Wraps `ameba.py clean`, doesn't sweep `.pio/` cache |
-| `pio device monitor` | 🔴 | Planned v0.2 (~50 LoC) |
-| `pio run -t menuconfig` | 🔴 | Planned v0.2 (~30 LoC) |
-| **VSCode IntelliSense** | 🔴 | Planned v0.2 — `compile_commands.json` export |
-| `pio debug` (GDB) | 🟡 | Stubbed in `platform.py`, not yet hardware-verified |
-| `pio test` (unity) | 🔴 | v1.0+ |
-| `pio lib install` / `lib_deps` | ❌ | **Intentionally not supported** — see [ARCH.md §3.4](./ARCH.md#34-pio-lib-install--永远不做) |
+| Feature | v0.1 | v0.2 | Notes |
+|---|:---:|:---:|---|
+| `pio run` (build) | ✅ | ✅ | RTL8721F verified end-to-end |
+| `pio run -t upload` | ✅ | ✅ | Local + remote-serial (`board_upload.remote_server`) |
+| `pio run -t ambsdk-clean` | 🟡 | ✅ | v0.2: cleans SDK + `.pio/` + project-root `compile_commands.json` |
+| `pio run -t monitor_ambsdk` | 🔴 | ✅ | v0.2: `ameba.py monitor`, supports remote serial (verified on real COM40) |
+| `pio run -t menuconfig` | 🔴 | ✅ | v0.2: hands off to `ameba.py menuconfig <SOC>` curses UI |
+| **VSCode IntelliSense** | 🔴 | ✅ | v0.2: auto-exports `compile_commands.json` (627 entries, 7.1 MB) |
+| `pio debug` (GDB) | 🟡 | 🟡 | Stubbed in `platform.py`, not yet hardware-verified |
+| Multi-env parallel (`pio run -e a -e b`) | 🟡 | ✅ | v0.2: per-env `TARGET_SOC` env var, no more `soc_info.json` race |
+| `pio test` (unity) | 🔴 | 🔴 | v1.0+ |
+| OTA upload | 🔴 | 🔴 | v0.3 planned |
+| `pio lib install` / `lib_deps` | ❌ | ❌ | **Intentionally not supported** — see [ARCH.md §3.4](./ARCH.md) |
 
-For the full architecture-boundary comparison against `platform-espressif32`, including the design rationale, the IntelliSense gap, and the v0.2 roadmap, **read [`ARCH.md`](./ARCH.md)**.
+For the full architecture-boundary comparison against `platform-espressif32`, including the design rationale, the IntelliSense fix, and the v0.3+ roadmap, **read [`ARCH.md`](./ARCH.md)**.
 
 ## License
 

@@ -23,7 +23,7 @@
     "type": "git",
     "url": "https://github.com/raul-chen/platform-amebartos.git"
   },
-  "version": "0.1.0-dev",
+  "version": "0.2.0-dev",
   "frameworks": {
     "ambsdk": {
       "script": "builder/frameworks/ambsdk.py",

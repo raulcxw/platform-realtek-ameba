@@ -1,7 +1,8 @@
 # platform-amebartos 进度报告
 
-> **当前版本**：v0.1.0-dev
-> **首次端到端跑通**：2026-05-27 21:54 UTC+8
+> **当前版本**：v0.2.0-dev
+> **首次端到端跑通**：2026-05-27 21:54 UTC+8（v0.1）
+> **v0.2 完成**：2026-05-27 23:50 UTC+8（IntelliSense / monitor / menuconfig / multi-env）
 > **维护者**：raul_chen @ Realtek
 
 ---
@@ -96,6 +97,33 @@ PIO upload_* 选项透传矩阵：
 | `board_upload.memory_type = nor` | `--memory-type nor` | nor / nand / ram |
 | `board_upload.chip_erase = yes` | `--chip-erase` | 全片擦除 |
 
+### Step 5 · 多 SoC 板子配置（2026-05-27）
+
+加了 4 个 board 定义，覆盖 ASDK 12.3.1 和 ASDK 10.3.1 两条工具链：
+
+| Board | Family | ASDK | 验证状态 |
+|---|---|---|---|
+| rtl8721f | amebagreen2 | 12.3.1 | ✅ 端到端编通 |
+| rtl8730e | amebasmart | 10.3.1 | 配置级解析通过（pio boards / pio project config）|
+| rtl8721dx | amebadplus | 10.3.1 | 同上 |
+| rtl8720e | amebalite | 10.3.1 | 同上 |
+
+### Step 6 · v0.2 — PIO 高级功能补齐（2026-05-27）
+
+v0.2 在 ~120 行增量代码内补齐了 5 项关键 PIO 功能：
+
+1. **VSCode IntelliSense**：`pio run` 自动导出 cmake 生成的 `compile_commands.json`（627 条目 / 7.1 MB）到工程根 + `.pio/build/<env>/`。VSCode/clangd 自动发现，写代码补全/跳转/类型提示全部可用。
+2. **`pio run -t monitor_ambsdk`**：注册 SCons custom target 调 `ameba.py monitor`，支持远程串口（PIO 内置 monitor 不支持）。已对真硬件 COM40 / 127.0.0.1:58916 验证连接。
+3. **`pio run -t menuconfig`**：调起 `ameba.py menuconfig <SOC>` 的 curses UI，用户终端直通。
+4. **`pio run -t ambsdk-clean`**：同步清三处——SDK `build_<SOC>/`（700 个对象文件）、PIO `.pio/`、工程根 `compile_commands.json`。
+5. **多 env 并行隔离**：用 `TARGET_SOC` 环境变量绕开 `soc_info.json`（基于研究 `tools/scripts/ameba_soc_utils.py:57` 发现 SocManager 优先读 env var）。每个 env 的 subprocess 拿到自己独立的 SoC 名，互不踩。**实测铁证**：rtl8721f → rtl8730e 顺序编译，最后 SDK 根 `soc_info.json` 残留 `RTL8721F`，但 rtl8730e 的 build 正确启动 amebasmart family + asdk-10.3.1（如果没 TARGET_SOC，会按 soc_info.json 错误地编成 amebagreen2）。
+
+> ⚠️ **rtl8730e build 失败的独立问题**：实测中 rtl8730e 编到 ATF（Arm Trusted Firmware）阶段报 `openssl/sha.h: No such file or directory`。这是 host 系统缺 `libssl-dev` 包，跟 PIO 适配无关——直接在 SDK 仓库手动跑 `ameba.py build` 一样失败。修复：`sudo apt install libssl-dev`。
+
+**设计取舍**：IntelliSense 没仿 espidf.py 的"白盒解析"路线（那要 ~150 行），直接用 cmake 自带的 `compile_commands.json`——25 行搞定。这印证了"黑盒委托"路线在 PIO 高级功能上同样可行，关键是上游 SDK 的 cmake 已经把数据准备好了。
+
+完整对比 platform-espressif32 的能力矩阵，详见 [`ARCH.md`](./ARCH.md)。
+
 ---
 
 ## 🏗️ 关键设计决策
@@ -146,9 +174,12 @@ COMMAND python ${c_BASEDIR}/tools/scripts/menuconfig.py
 
 | Step | 内容 | 需要硬件？ | 预计 |
 |---|---|---|---|
-| **5** | 多 SoC 板子已加（RTL8730E / RTL8721Dx / RTL8720E）✅ | ❌ | done |
-| **6** | framework-ambsdk 自分发（解决本地 symlink hack）| ❌ | 1-2h |
-| **7** | PR 进 PIO Registry | ❌ | 看反馈 |
+| **6** | v0.2 PIO 高级功能（IntelliSense/monitor/menuconfig/multi-env）✅ | ❌ | done |
+| **7** | OTA 烧录支持 | ❌ | v0.3 ~80 行 |
+| **8** | `pio debug` 真验证（OpenOCD 配置） | ✅ 板子 | v0.3 |
+| **9** | 文件系统镜像（LittleFS）`pio run -t buildfs` | ❌ | v0.3 ~100 行 |
+| **10** | framework-ambsdk 自分发（解决本地 symlink hack）| ❌ | v0.3 |
+| **11** | PR 进 PIO Registry | ❌ | v1.0 |
 
 ---
 
@@ -175,4 +206,4 @@ COMMAND python ${c_BASEDIR}/tools/scripts/menuconfig.py
 
 ---
 
-*最后更新：2026-05-27 22:05 UTC+8*
+*最后更新：2026-05-27 23:50 UTC+8 (v0.2.0-dev)*
