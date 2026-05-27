@@ -69,6 +69,33 @@ Python3 found: .../ameba-rtos/.venv/bin/python3.11
 [SUCCESS]
 ```
 
+### Step 4 · `pio run -t upload` 烧录链路跑通（2026-05-27 22:25）
+
+```
+======================== [SUCCESS] Took 290.55 seconds ========================
+```
+
+**真实硬件验证**：RTL8721F EVB，DID 0x7005，16MB NOR，WiFi MAC `00:E0:4C:00:14:1A`，远程串口服务器 127.0.0.1:58916，COM40。
+
+```
+[ambsdk] uploading SoC=RTL8721F, opts={'port': 'COM40', 'remote-server': '127.0.0.1', 'remote-password': '87654321'}
+[ambsdk] $ python3 ameba.py flash --port COM40 --remote-server 127.0.0.1 --remote-password 87654321
+[COM40]boot.bin download done: 29KB / 479.0ms / 495.0Kbps
+[COM40]app.bin download done:  565KB / 6375.0ms / 726.0Kbps
+[COM40]Finished PASS
+```
+
+PIO upload_* 选项透传矩阵：
+
+| `platformio.ini` 配置 | `ameba.py flash` 参数 | 备注 |
+|---|---|---|
+| `upload_port = COM40` | `-p COM40` | 必需 |
+| `upload_speed = 1500000` | `-b 1500000` | 默认 1.5Mbps |
+| `board_upload.remote_server = 127.0.0.1` | `--remote-server 127.0.0.1` | 远程串口（开发机不直连板子时用）|
+| `board_upload.remote_password = 87654321` | `--remote-password 87654321` | 远程串口密码 |
+| `board_upload.memory_type = nor` | `--memory-type nor` | nor / nand / ram |
+| `board_upload.chip_erase = yes` | `--chip-erase` | 全片擦除 |
+
 ---
 
 ## 🏗️ 关键设计决策
@@ -116,8 +143,7 @@ COMMAND python ${c_BASEDIR}/tools/scripts/menuconfig.py
 
 | Step | 内容 | 需要硬件？ | 预计 |
 |---|---|---|---|
-| **4** | `pio run -t upload` 烧录链路 | ✅ RTL8721F 板 + USB | 1-2h |
-| **5** | 多 SoC 板子（RTL8730E AmebaSmart / RTL8710BN AmebaZ2 / RTL8711F AmebaLite）| ❌ | 30min |
+| **5** | 多 SoC 板子已加（RTL8730E / RTL8721Dx / RTL8720E）✅ | ❌ | done |
 | **6** | framework-ambsdk 自分发（解决本地 symlink hack）| ❌ | 1-2h |
 | **7** | PR 进 PIO Registry | ❌ | 看反馈 |
 
