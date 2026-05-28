@@ -48,8 +48,8 @@
 
 | 功能 | espressif32 | amebartos v0.1 | amebartos v0.2 | 是否计划做 |
 |---|---|---|---|---|
-| `pio lib install` PIO 库管理 | 🟢 | 🔴 **不支持** | 🔴 **不支持** | ❌ **永远不做** — 哲学冲突，详见 §3.4 |
-| `lib_deps` 自动拉外部库 | 🟢 | 🔴 | 🔴 | ❌ 同上 |
+| `pio lib install` PIO 库管理 | 🟢 | 🔴 **不支持** | 🔴 **不支持** | 🟡 v1.0 不做（哲学冲突），v1.1+ 视社区需求开 git URL + portable 库支持，详见 §3.4 |
+| `lib_deps` 自动拉外部库 | 🟢 | 🔴 | 🔴 | 🟡 同上 |
 | `pio test`（unity 单元测试） | 🟢 | 🔴 | 🔴 | 🟡 v1.0+ 看需求 |
 | 文件系统镜像 `pio run -t buildfs`（SPIFFS/LittleFS） | 🟢 | 🔴 | 🔴 | 🟡 v0.3+，Ameba 有 LittleFS 但没接 |
 | OTA 烧录 | 🟢 | 🔴 | 🔴 | 🟡 v0.3 计划 |
@@ -159,17 +159,101 @@ sdk_env["TARGET_SOC"] = SOC   # SOC 已经是从 board.get("build.soc") 读出�
 
 **已验证**：rtl8721f → rtl8730e 顺序编译，两个 SoC 各自得到 `build_RTL8721F/` 和 `build_RTL8730E/`，互不污染。
 
-### 3.4 `pio lib install` —— 永远不做
+### 3.4 `lib_deps` / PIO Lib Registry —— v1.0 不做，未来视情况
 
-PIO 库管理器（lib_deps、lib_extra_dirs）是为 Arduino 风格的"独立小库"设计的：每个库是一个独立 git 仓库，PIO 帮你下载到 `.pio/libdeps/`，编译时自动加 `-I` 和源文件。
+#### 真相 1：espidf.py 真的接了 PIO Lib Builder
 
-Ameba SDK 的组件系统是**完全不同的范式**：组件在 `component/` 目录里，`Kconfig` 配置开关，cmake 在 SDK 内部编进 `lib_*.a` 静态库。两者**强行调和会混乱**。
+之前版本本节写"espidf.py 解析组件树**模拟**成 PIO 库管理器看得懂的格式"——**这是事实错误**。实际方向反过来：
 
-**Espressif 的解法**：espidf.py 解析 ESP-IDF 组件树，**模拟**成 PIO 库管理器看得懂的格式。这部分代码占了 espidf.py 一半篇幅，且每次 ESP-IDF 更新就要修一次。
+```python
+# platform-espressif32/builder/frameworks/espidf.py:46
+from platformio.builder.tools.piolib import ProjectAsLibBuilder
 
-**我们的解法**：直接用 SDK 原生组件系统。用户在 `platformio.ini` 里通过 `board_build.ambsdk.menuconfig = ...` 走 Ameba 自己的 Kconfig 流程开关组件，**不假装支持 `lib_deps`**。
+# espidf.py:114-128
+def get_project_lib_includes(env):
+    project = ProjectAsLibBuilder(env, "$PROJECT_DIR")
+    project.install_dependencies()
+    project.search_deps_recursive()
+    for lb in env.GetLibBuilders():
+        ...  # 把 PIO lib 的 include 塞进 IDF 的 cmake CPPPATH
+```
 
-哲学：**让 PIO 干 PIO 擅长的事（构建编排+烧录+IDE 集成），让 SDK 干 SDK 擅长的事（组件管理+硬件抽象）**。
+ESP-IDF 用户写 `lib_deps = bblanchon/ArduinoJson` 时，espidf.py 走 `ProjectAsLibBuilder` 把库装进 `.pio/libdeps/`，再把 include + 源码塞进 IDF 的 cmake build graph（通过 `__LIB_DEPS` 链路 + `find_lib_deps` 解析）。**ESP-IDF + PIO 是真支持 lib_deps 的**。
+
+#### 真相 2：但能编通的库**远远少于 17000**
+
+PIO Lib Registry 有 ~17000 个库，但兼容性是**库自己声明**的。看 `library.json`：
+
+```json
+{
+  "name": "ArduinoJson",
+  "platforms": ["espressif32", "atmelsam", "ststm32", ...],
+  "frameworks": ["arduino"]
+}
+```
+
+`piolib.py:1070 IsCompatibleLibBuilder` 严格检查：
+
+```python
+if compat_mode == "strict" and not lb.is_platforms_compatible(env["PIOPLATFORM"]):
+    return False
+if not lb.is_frameworks_compatible(env.get("PIOFRAMEWORK")):
+    return False
+```
+
+→ `platform = amebartos` + `framework = ambsdk` 来调任何库时，**默认全跳过**，因为没有库声明兼容这个平台/框架。
+
+实际能编的库需满足：
+1. **声明 `framework: ["*"]` 或不声明**（纯 portable C/C++ 库），且
+2. **源码不依赖 Arduino API**（`<Arduino.h>`、`WiFi.h`、`Wire.h` 等都用不了）
+
+PIO Lib Registry **绝大多数热门库（ArduinoJson 除外）都是 Arduino 生态专用的**——FastLED、Adafruit_GFX、PubSubClient、AsyncTCP……即使强制 `lib_compat_mode = off`，源码 include `<Arduino.h>` 也根本编不通。
+
+→ 真正可用的库估计在 **~50-200 个**（纯模板/纯 C 算法库），比如 ArduinoJson、nlohmann/json、protobuf-c、tinycbor、FFT 库等。
+
+#### 真相 3：RTOS SDK 的真实生态在 SDK 内部
+
+Realtek IoT 客户写 RTL8721F 项目时实际依赖什么：
+
+| 依赖类型 | 来源 |
+|---|---|
+| WiFi/BLE/TCP-IP 驱动 | **SDK 内置** (`component/wifi`, `component/lwip`, `component/bluetooth`) |
+| FreeRTOS | **SDK 内置** |
+| mbedTLS | **SDK 内置** |
+| HTTP / MQTT / WebSocket / CoAP | **SDK 内置或客户自移植** |
+| OTA / 文件系统 / NVS | **SDK 内置** |
+| AI / 语音 | Realtek `aivoice` / `tflite_micro`（SDK submodule） |
+| 厂商驱动（屏幕/传感器） | 厂商提供 SDK，或客户自写 |
+
+**RTOS 生态的底层假设**——SDK 是封闭主战场，外部库是辅助。客户买 RTL8721F 不是冲着"能用 PIO 17000 库"来的，是冲着 Realtek WiFi 6 + SDK 完整度。
+
+#### 真相 4：portable 库其实**有路径**支持
+
+PIO 的 `lib_deps` 也支持 git URL 直链：
+
+```ini
+lib_deps =
+    https://github.com/nlohmann/json.git
+    https://github.com/h2non/farmhash-cpp.git
+```
+
+PIO 拉到 `.pio/libdeps/`，**只要源码不依赖 Arduino API**，platform-amebartos 的 builder 理论上能编——因为 v0.3 已经有 `EXTRA_CFLAGS` 透传机制，把库源码 + include 写进一个 `_pio_lib_deps_fragment.cmake` 让 SDK 的 `app_example/CMakeLists.txt` include 即可。
+
+技术路径**已经铺好**，没启用而已。
+
+#### 决策：v1.0 不做，理由如下
+
+1. **ESP-IDF 本身也只是名义支持**：尽管 espidf.py 接了 PIO Lib Builder，但 ESP-IDF 用户的真实生态在 [components.espressif.com](https://components.espressif.com/)（IDF Component Registry），不是 PIO Lib Registry。社区已经多年接受这个事实，没人喊"缺陷"。
+2. **17000 库的 80%+ 对 RTOS 平台天然无效**：因为是 Arduino 专用。
+3. **RTOS 用户需求点不在这里**：他们要的是 SDK 完整度、芯片性能、量产稳定性。
+4. **真要做时工作量可控**：~150-250 行代码（参考 espidf.py:114-128 + `__LIB_DEPS` 链路），**约 2-3 人天**。
+5. **触发条件**：等用户开始问"我能不能用 ArduinoJson"，3 个真实 issue 后再做不晚。
+
+#### 哲学
+
+**让 PIO 干 PIO 擅长的事（构建编排+烧录+IDE 集成），让 SDK 干 SDK 擅长的事（组件管理+硬件抽象）**。
+
+`pio lib install` 不做 = 这个哲学的延伸。SDK 的 Kconfig 体系是更准确的组件管理范式（依赖关系、互斥项、子选项树），强行把它压扁成 PIO 的 `lib_deps` 列表是范式倒退。
 
 ---
 
@@ -194,7 +278,8 @@ Ameba SDK 的组件系统是**完全不同的范式**：组件在 `component/` �
 | 中 | `pio debug` 真验证（OpenOCD config） | 🟡 中 | 验证为主 |
 | 中 | 文件系统镜像 `pio run -t buildfs`（LittleFS） | 🟡 中 | ~100 行 |
 | 低 | `pio test`（unity） | 🔴 难 | ~300 行 |
-| ❌ 不做 | `pio lib install` / `lib_deps` | — | — |
+| 🟡 v1.1+ | `lib_deps` git URL + portable 库支持 | 🟡 中（参考 espidf.py:114-128 + ProjectAsLibBuilder） | ~150-250 行（约 2-3 人天） |
+| ❌ 不做 | `lib_deps` 全 17000 PIO 库（含 Arduino 库） | — | 范式冲突，详见 §3.4 |
 
 ---
 
@@ -218,7 +303,7 @@ Ameba SDK 的组件系统是**完全不同的范式**：组件在 `component/` �
 ### v0.2 的真实定位
 
 **v0.2 是 PIO 集成的"开发态体验完成品"**：构建/烧录/监视器/配置/IntelliSense/多 env 全部到位。  
-跟 platform-espressif32 比，剩下的差距集中在**生态深度集成**（pio test、buildfs、OTA、lib_deps），其中 `lib_deps` 是**有意不做**的设计选择，其余在 v0.3+ 路线图。
+跟 platform-espressif32 比，剩下的差距集中在**生态深度集成**（pio test、buildfs、OTA、lib_deps），其中 `lib_deps` 是**v1.0 主动延后**的取舍（不是缺陷，详见 §3.4 — RTOS 生态不在 PIO Lib Registry，且 ESP-IDF 名义支持但实际用户也不在那个 registry），其余在 v0.3+ 路线图。
 
 实际开发者从 v0.1 升 v0.2 体验差距：
 - 写代码：从"红波浪线一片"到"VSCode 智能提示完整可用"
