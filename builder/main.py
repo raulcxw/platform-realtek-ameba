@@ -69,23 +69,47 @@ board = env.BoardConfig()
 def _find_sdk_dir():
     """Locate the ameba-rtos checkout.
 
-    v0.3 strategy: still no PIO-distributed package. Prefer
-    ``$AMEBA_SDK_DIR``, then a few well-known dev locations, then fail
-    with a clear message.
+    v0.3.1 strategy: SDK is now distributed as a PIO package via git URL
+    (see platform.json `packages.framework-ameba-rtos`). PIO clones it
+    automatically into ~/.platformio/packages/framework-ameba-rtos/ on
+    first `pio run`.
+
+    Lookup priority:
+      1. ``$AMEBA_SDK_DIR`` env var (developer override, e.g. local fork)
+      2. PIO-managed package path via PioPlatform().get_package_dir()
+      3. Well-known dev locations (legacy / convenience for in-tree work)
+
+    Falls back with a clear error message if none found.
     """
-    candidates = [
-        os.environ.get("AMEBA_SDK_DIR", ""),
+    candidates = [os.environ.get("AMEBA_SDK_DIR", "")]
+
+    # PIO-managed package path (the "clean install" default route)
+    try:
+        from platformio.public import PioPlatform
+        pkg_dir = PioPlatform().get_package_dir("framework-ameba-rtos")
+        if pkg_dir:
+            candidates.append(pkg_dir)
+    except Exception:
+        # PIO not available in this context (e.g. unit tests); fall through
+        pass
+
+    # Legacy / dev convenience paths
+    candidates += [
         os.path.expanduser("~/projects/ameba-platformio-research/repos/ameba-rtos"),
         os.path.expanduser("~/projects/ameba-rtos"),
         os.path.expanduser("~/.platformio/packages/framework-ameba-rtos"),
     ]
+
     for candidate in candidates:
         if candidate and isdir(candidate) and isfile(join(candidate, "ameba.py")):
             return candidate
+
     raise FileNotFoundError(
-        "ameba-rtos SDK not found. Set AMEBA_SDK_DIR to a local checkout "
-        "of https://github.com/Ameba-AIoT/ameba-rtos.git, or symlink it to "
-        "~/.platformio/packages/framework-ameba-rtos."
+        "ameba-rtos SDK not found. PIO normally fetches it automatically "
+        "from https://github.com/Ameba-AIoT/ameba-rtos.git on first `pio run` "
+        "(see platform.json packages). If that failed, either:\n"
+        "  - Run `pio pkg install -p framework-ameba-rtos` manually, or\n"
+        "  - Set AMEBA_SDK_DIR to a local checkout."
     )
 
 

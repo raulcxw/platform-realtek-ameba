@@ -132,8 +132,8 @@ v0.2 在 ~120 行增量代码内补齐了 5 项关键 PIO 功能：
 | 决策 | 选择 | 替代方案 | 理由 |
 |---|---|---|---|
 | **CMake 链路** | 不重写，shell 调 `ameba.py build` | 仿 espidf.py 重做 cmake 包装 | espidf.py 是 ~2300 LoC 的怪物；LibreTiny 重做 cmake 几个 SoC 后维护爆炸；Ameba 上游 cmake/ninja 已经版本锁死，重做没价值 |
-| **Toolchain 管理** | SDK 自管，PIO 不声明 toolchain 包 | 把 asdk-12.3.1 / asdk-10.3.1 注册到 PIO Registry | Realtek 没在 PIO Registry 发布；许可证不允许我们镜像；`ameba.py` 已经按 SoC 锁定版本 |
-| **SDK 包分发** | v0.1: 不声明 framework 包，靠 `AMEBA_SDK_DIR` 环境变量或默认路径找 | 做成 `framework-ameba-rtos` git 包从 Registry 拉 | v0.1 跑通验证更重要；Step 6 再上 |
+| **Toolchain 管理** | SDK 自管，PIO 不声明 toolchain 包 | 把 asdk-12.3.1 / asdk-10.3.1 注册到 PIO Registry | 走 git URL 直链让 Realtek 上游 SDK 自己管理 toolchain 下载（env.sh + aliyun 镜像，已经做得很好），PIO 不重复造轮子；`ameba.py` 已经按 SoC 锁定版本 |
+| **SDK 包分发** | v0.3.1: platform.json 声明 `framework-ameba-rtos` 走 git URL（github.com/Ameba-AIoT/ameba-rtos），PIO 自动 clone 到 `~/.platformio/packages/` | 镜像到 PIO Registry CDN | 走 git URL 不需要镜像，规避了"把上游产品代码搬到第三方 CDN"的政治成本；PIO 原生支持 git URL 当 package version |
 | **端到端入口** | `subprocess.call([venv_python, "ameba.py", "build"])` | SCons Builder + Action graph | SCons 跟 ameba.py 内部的 cmake 树两套依赖系统并存会冲突；shell 调最干净 |
 | **Glue 代码量** | ~250 LoC | espidf.py 的 ~2300 LoC | 9x 精简，全靠"不重写上游 cmake" |
 
