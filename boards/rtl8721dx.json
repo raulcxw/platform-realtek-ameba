@@ -1,12 +1,12 @@
 {
   "build": {
-    "core": "ambsdk",
+    "core": "ameba-rtos",
     "cpu": "cortex-m33",
     "extra_flags": "-DRTL8721Dx -DAMEBADPLUS",
     "f_cpu": "150000000L",
     "mcu": "rtl8721dx",
     "soc": "RTL8721Dx",
-    "ambsdk": {
+    "ameba-rtos": {
       "family": "amebadplus",
       "asdk_version": "10.3.1",
       "default_app": "default"
@@ -21,7 +21,7 @@
     "default_tool": "openocd"
   },
   "frameworks": [
-    "ambsdk"
+    "ameba-rtos"
   ],
   "name": "Realtek RTL8721Dx (AmebaD-Plus)",
   "upload": {

@@ -1,12 +1,12 @@
 {
   "build": {
-    "core": "ambsdk",
+    "core": "ameba-rtos",
     "cpu": "cortex-a32",
     "extra_flags": "-DRTL8730E -DAMEBASMART",
     "f_cpu": "1000000000L",
     "mcu": "rtl8730e",
     "soc": "RTL8730E",
-    "ambsdk": {
+    "ameba-rtos": {
       "family": "amebasmart",
       "asdk_version": "10.3.1",
       "default_app": "default"
@@ -21,7 +21,7 @@
     "default_tool": "openocd"
   },
   "frameworks": [
-    "ambsdk"
+    "ameba-rtos"
   ],
   "name": "Realtek RTL8730E (AmebaSmart)",
   "upload": {

@@ -1,12 +1,12 @@
-# platform-amebartos
+# platform-realtek-ameba
 
 PlatformIO platform for the **Realtek Ameba** family of Wi-Fi + Bluetooth
 IoT MCUs, backed by the official `ameba-rtos` SDK.
 
 > **Status:** v0.2.0-dev — Linux only. RTL8721F (AmebaGreen2) verified
 > end-to-end via `ameba.py build` + remote-serial flash. v0.2 brings
-> VSCode IntelliSense, `pio run -t monitor_ambsdk`, `pio run -t menuconfig`,
-> `pio run -t ambsdk-clean`, and safe multi-env parallel builds.
+> VSCode IntelliSense, `pio run -t monitor_ameba`, `pio run -t menuconfig`,
+> `pio run -t ameba-clean`, and safe multi-env parallel builds.
 
 ## Why a new platform?
 
@@ -35,14 +35,14 @@ glue layer is ~200 LoC instead of LibreTiny's full reimplementation.
 
 ```bash
 # 1. Install platform from local checkout
-pio platform install file:///path/to/platform-amebartos
+pio platform install file:///path/to/platform-realtek-ameba
 
 # 2. New project
 mkdir my-ameba-app && cd my-ameba-app
 cat > platformio.ini <<'EOF'
 [env:rtl8721f]
-platform = amebartos
-framework = ambsdk
+platform = realtek-ameba
+framework = ameba-rtos
 board = rtl8721f
 EOF
 
@@ -55,13 +55,13 @@ pio run -t upload
 
 ## Internals
 
-- `platform.json`: PlatformIO platform manifest, declares `ambsdk` framework
+- `platform.json`: PlatformIO platform manifest, declares `ameba-rtos` framework
   and toolchain packages.
 - `platform.py`: Sub-classes `PlatformBase`, picks the right asdk version
   per SoC, registers OpenOCD/JLink debug tools.
 - `builder/main.py`: SCons entry. Shells out to `ameba.py build` /
   `ameba.py flash`, copies `build_<SOC>/app.bin` into PIO's `BUILD_DIR`.
-- `builder/frameworks/ambsdk.py`: Framework-discovery stub.
+- `builder/frameworks/ameba-rtos.py`: Framework-discovery stub.
 - `boards/<soc>.json`: Per-SoC board manifests.
 
 ## PIO feature support — at a glance
@@ -70,8 +70,8 @@ pio run -t upload
 |---|:---:|:---:|---|
 | `pio run` (build) | ✅ | ✅ | RTL8721F verified end-to-end |
 | `pio run -t upload` | ✅ | ✅ | Local + remote-serial (`board_upload.remote_server`) |
-| `pio run -t ambsdk-clean` | 🟡 | ✅ | v0.2: cleans SDK + `.pio/` + project-root `compile_commands.json` |
-| `pio run -t monitor_ambsdk` | 🔴 | ✅ | v0.2: `ameba.py monitor`, supports remote serial (verified on real COM40) |
+| `pio run -t ameba-clean` | 🟡 | ✅ | v0.2: cleans SDK + `.pio/` + project-root `compile_commands.json` |
+| `pio run -t monitor_ameba` | 🔴 | ✅ | v0.2: `ameba.py monitor`, supports remote serial (verified on real COM40) |
 | `pio run -t menuconfig` | 🔴 | ✅ | v0.2: hands off to `ameba.py menuconfig <SOC>` curses UI |
 | **VSCode IntelliSense** | 🔴 | ✅ | v0.2: auto-exports `compile_commands.json` (627 entries, 7.1 MB) |
 | `pio debug` (GDB) | 🟡 | 🟡 | Stubbed in `platform.py`, not yet hardware-verified |

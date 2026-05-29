@@ -1,4 +1,4 @@
-# platform-amebartos 进度报告
+# platform-realtek-ameba 进度报告
 
 > **当前版本**：v0.3.0-dev
 > **首次端到端跑通**：2026-05-27 21:54 UTC+8（v0.1）
@@ -10,7 +10,7 @@
 
 ## 🎯 任务定义
 
-为 **Realtek Ameba RTOS SDK**（amebagreen2 / amebasmart / amebaz2 等系列）做 PlatformIO 平台接入，目标是社区可用的 `platform-amebartos` 仓库，最终能进 PIO Registry。
+为 **Realtek Ameba RTOS SDK**（amebagreen2 / amebasmart / amebaz2 等系列）做 PlatformIO 平台接入，目标是社区可用的 `platform-realtek-ameba` 仓库，最终能进 PIO Registry。
 
 第一阶段重点验证：**RTL8721F (AmebaGreen2 双核 KM4TZ + KM4NS)** 在 PIO 下能从 `pio run` 跑到固件产物。
 
@@ -31,15 +31,15 @@
 - 18 分钟（含 372MB toolchain 下载 + 解压 + 双核编译）
 - 产物：`build_RTL8721F/{app.bin, boot.bin, ota_all.bin}`
 
-### Step 2 · platform-amebartos/ 骨架（5 个文件，~250 LoC）
+### Step 2 · platform-realtek-ameba/ 骨架（5 个文件，~250 LoC）
 
 ```
-platform-amebartos/
+platform-realtek-ameba/
 ├── platform.json              # PIO 平台清单
-├── platform.py                # AmebartosPlatform(PlatformBase)
+├── platform.py                # RealtekAmebaPlatform(PlatformBase)
 ├── builder/
 │   ├── main.py                # SCons 入口，调 ameba.py build/flash
-│   └── frameworks/ambsdk.py   # framework 发现 stub
+│   └── frameworks/ameba-rtos.py   # framework 发现 stub
 ├── boards/
 │   └── rtl8721f.json          # AmebaGreen2 板子定义
 ├── examples/ameba-blink/      # 验证用最小工程
@@ -58,16 +58,16 @@ platform-amebartos/
 完整证据链：
 
 ```
-Processing rtl8721f (platform: amebartos; framework: ambsdk; board: rtl8721f)
-[ambsdk] $ python ameba.py soc RTL8721F        ← PIO 调 SDK
-[ambsdk] $ python ameba.py build               ← PIO 调 SDK
+Processing rtl8721f (platform: realtek-ameba; framework: ameba-rtos; board: rtl8721f)
+[ameba-rtos] $ python ameba.py soc RTL8721F        ← PIO 调 SDK
+[ameba-rtos] $ python ameba.py build               ← PIO 调 SDK
 asdk-12.3.1-linux-newlib-build-4600-x86_64.tar.bz2 100% [371576545/371576545]  ← 自动下 372MB
 Toolchain Version Matched
 Python3 found: .../ameba-rtos/.venv/bin/python3.11
 [INFOR] soc project : amebagreen2, soc type: amebagreen2|AmebaGreen2
 [710/710] generate build_info.h                ← 710 个目标全过
 ========== Image app generate end ==========
-[ambsdk] copied build_RTL8721F/app.bin → .pio/build/rtl8721f/firmware.bin
+[ameba-rtos] copied build_RTL8721F/app.bin → .pio/build/rtl8721f/firmware.bin
 [SUCCESS]
 ```
 
@@ -80,8 +80,8 @@ Python3 found: .../ameba-rtos/.venv/bin/python3.11
 **真实硬件验证**：RTL8721F EVB，DID 0x7005，16MB NOR，WiFi MAC `00:E0:4C:00:14:1A`，远程串口服务器 127.0.0.1:58916，COM40。
 
 ```
-[ambsdk] uploading SoC=RTL8721F, opts={'port': 'COM40', 'remote-server': '127.0.0.1', 'remote-password': '87654321'}
-[ambsdk] $ python3 ameba.py flash --port COM40 --remote-server 127.0.0.1 --remote-password 87654321
+[ameba-rtos] uploading SoC=RTL8721F, opts={'port': 'COM40', 'remote-server': '127.0.0.1', 'remote-password': '87654321'}
+[ameba-rtos] $ python3 ameba.py flash --port COM40 --remote-server 127.0.0.1 --remote-password 87654321
 [COM40]boot.bin download done: 29KB / 479.0ms / 495.0Kbps
 [COM40]app.bin download done:  565KB / 6375.0ms / 726.0Kbps
 [COM40]Finished PASS
@@ -114,9 +114,9 @@ PIO upload_* 选项透传矩阵：
 v0.2 在 ~120 行增量代码内补齐了 5 项关键 PIO 功能：
 
 1. **VSCode IntelliSense**：`pio run` 自动导出 cmake 生成的 `compile_commands.json`（627 条目 / 7.1 MB）到工程根 + `.pio/build/<env>/`。VSCode/clangd 自动发现，写代码补全/跳转/类型提示全部可用。
-2. **`pio run -t monitor_ambsdk`**：注册 SCons custom target 调 `ameba.py monitor`，支持远程串口（PIO 内置 monitor 不支持）+ `-reset` 软重启抓 boot log + `--no-console` 非交互模式（stdin 喂命令）。**端到端真验证（真硬件）**：触发软重启后捕获 57 行带时间戳 boot log（`ROM:[V1.0]` 到 `[WLAN-A] IPS in`），发 `DW 0 4` 读 0x0 内存，板子返回 `30001000 00000021 ...`（MSP 栈顶值）。完全等同本地串口体验。波特率默认设 1500000（Ameba LogUART 硬编码值）。
+2. **`pio run -t monitor_ameba`**：注册 SCons custom target 调 `ameba.py monitor`，支持远程串口（PIO 内置 monitor 不支持）+ `-reset` 软重启抓 boot log + `--no-console` 非交互模式（stdin 喂命令）。**端到端真验证（真硬件）**：触发软重启后捕获 57 行带时间戳 boot log（`ROM:[V1.0]` 到 `[WLAN-A] IPS in`），发 `DW 0 4` 读 0x0 内存，板子返回 `30001000 00000021 ...`（MSP 栈顶值）。完全等同本地串口体验。波特率默认设 1500000（Ameba LogUART 硬编码值）。
 3. **`pio run -t menuconfig`**：调起 `ameba.py menuconfig <SOC>` 的 curses UI，用户终端直通。
-4. **`pio run -t ambsdk-clean`**：同步清三处——SDK `build_<SOC>/`（700 个对象文件）、PIO `.pio/`、工程根 `compile_commands.json`。
+4. **`pio run -t ameba-clean`**：同步清三处——SDK `build_<SOC>/`（700 个对象文件）、PIO `.pio/`、工程根 `compile_commands.json`。
 5. **多 env 并行隔离**：用 `TARGET_SOC` 环境变量绕开 `soc_info.json`（基于研究 `tools/scripts/ameba_soc_utils.py:57` 发现 SocManager 优先读 env var）。每个 env 的 subprocess 拿到自己独立的 SoC 名，互不踩。**实测铁证**：rtl8721f → rtl8730e 顺序编译，最后 SDK 根 `soc_info.json` 残留 `RTL8721F`，但 rtl8730e 的 build 正确启动 amebasmart family + asdk-10.3.1（如果没 TARGET_SOC，会按 soc_info.json 错误地编成 amebagreen2）。
 
 > ⚠️ **rtl8730e build 失败的独立问题**：实测中 rtl8730e 编到 ATF（Arm Trusted Firmware）阶段报 `openssl/sha.h: No such file or directory`。这是 host 系统缺 `libssl-dev` 包，跟 PIO 适配无关——直接在 SDK 仓库手动跑 `ameba.py build` 一样失败。修复：`sudo apt install libssl-dev`。
@@ -133,7 +133,7 @@ v0.2 在 ~120 行增量代码内补齐了 5 项关键 PIO 功能：
 |---|---|---|---|
 | **CMake 链路** | 不重写，shell 调 `ameba.py build` | 仿 espidf.py 重做 cmake 包装 | espidf.py 是 ~2300 LoC 的怪物；LibreTiny 重做 cmake 几个 SoC 后维护爆炸；Ameba 上游 cmake/ninja 已经版本锁死，重做没价值 |
 | **Toolchain 管理** | SDK 自管，PIO 不声明 toolchain 包 | 把 asdk-12.3.1 / asdk-10.3.1 注册到 PIO Registry | Realtek 没在 PIO Registry 发布；许可证不允许我们镜像；`ameba.py` 已经按 SoC 锁定版本 |
-| **SDK 包分发** | v0.1: 不声明 framework 包，靠 `AMEBA_SDK_DIR` 环境变量或默认路径找 | 做成 `framework-ambsdk` git 包从 Registry 拉 | v0.1 跑通验证更重要；Step 6 再上 |
+| **SDK 包分发** | v0.1: 不声明 framework 包，靠 `AMEBA_SDK_DIR` 环境变量或默认路径找 | 做成 `framework-ameba-rtos` git 包从 Registry 拉 | v0.1 跑通验证更重要；Step 6 再上 |
 | **端到端入口** | `subprocess.call([venv_python, "ameba.py", "build"])` | SCons Builder + Action graph | SCons 跟 ameba.py 内部的 cmake 树两套依赖系统并存会冲突；shell 调最干净 |
 | **Glue 代码量** | ~250 LoC | espidf.py 的 ~2300 LoC | 9x 精简，全靠"不重写上游 cmake" |
 
@@ -146,7 +146,7 @@ v0.2 在 ~120 行增量代码内补齐了 5 项关键 PIO 功能：
 
 ### 坑 1: PIO 不认 symlink 当作 framework 包
 
-**现象**：`pio run` 看到 `~/.platformio/packages/framework-ambsdk` 是 symlink 不是目录里的 `package.json`，判定"未安装"，去 git clone 那个不存在的 `main` 分支。
+**现象**：`pio run` 看到 `~/.platformio/packages/framework-ameba-rtos` 是 symlink 不是目录里的 `package.json`，判定"未安装"，去 git clone 那个不存在的 `main` 分支。
 
 **修法**：① 给 SDK 仓库根加 `package.json`，PIO 才认为它"已安装"；② 或者干脆 platform.json 不声明这个包，用环境变量找。
 
@@ -179,7 +179,7 @@ COMMAND python ${c_BASEDIR}/tools/scripts/menuconfig.py
 | **7** | OTA 烧录支持 | ❌ | v0.3 ~80 行 |
 | **8** | `pio debug` 真验证（OpenOCD 配置） | ✅ 板子 | v0.3 |
 | **9** | 文件系统镜像（LittleFS）`pio run -t buildfs` | ❌ | v0.3 ~100 行 |
-| **10** | framework-ambsdk 自分发（解决本地 symlink hack）| ❌ | v0.3 |
+| **10** | framework-ameba-rtos 自分发（解决本地 symlink hack）| ❌ | v0.3 |
 | **11** | PR 进 PIO Registry | ❌ | v1.0 |
 
 ---
@@ -188,9 +188,9 @@ COMMAND python ${c_BASEDIR}/tools/scripts/menuconfig.py
 
 | 类别 | 路径 |
 |---|---|
-| 源码（git 仓库）| `~/projects/ameba-platformio-research/platform-amebartos/` |
+| 源码（git 仓库）| `~/projects/ameba-platformio-research/platform-realtek-ameba/` |
 | Ameba SDK 镜像 | `~/projects/ameba-platformio-research/repos/ameba-rtos/` |
-| Toolchain（asdk-12.3.1）| `~/.platformio/platforms/amebartos/.cache/rtk-toolchain/asdk-12.3.1-4600/` |
+| Toolchain（asdk-12.3.1）| `~/.platformio/platforms/realtek-ameba/.cache/rtk-toolchain/asdk-12.3.1-4600/` |
 | Prebuilts（cmake/ninja）| `~/rtk-toolchain/prebuilts-linux-1.0.3/` |
 | PIO 用户目录 | `~/.platformio/` |
 | 固件产物 | `examples/ameba-blink/.pio/build/rtl8721f/firmware.bin` |
@@ -202,7 +202,7 @@ COMMAND python ${c_BASEDIR}/tools/scripts/menuconfig.py
 这次工作产出三件 IoT 团队可能关心的事：
 
 1. **Ameba SDK 已经能被 PIO 自动消费**——意味着任何用 PlatformIO（VSCode + PIO 插件、CLion + PIO 插件）的开发者，都能 `pio run` 编 RTL8721F，不需要他们装 ameba-rtos 仓库 + 跑 env.sh。
-2. **维护成本极低**：上游 ameba-rtos 怎么改 cmake 都不影响 platform-amebartos，因为我们只调 `ameba.py` 公共 CLI。Realtek 团队继续维护 ameba.py 接口稳定即可。
+2. **维护成本极低**：上游 ameba-rtos 怎么改 cmake 都不影响 platform-realtek-ameba，因为我们只调 `ameba.py` 公共 CLI。Realtek 团队继续维护 ameba.py 接口稳定即可。
 3. **路径打开**：将来要做"小智 AI on AmebaGreen2"、"Ameba 跑 Tailscale"、"Matter on Ameba" 这类社区 demo，开发者第一行就是 `pio run`，跟 ESP32 用户体验一致。
 
 ---
@@ -241,7 +241,7 @@ PIO 用户习惯写 `src/main.c`，Ameba SDK 要求源码注册到 `app_example/
 v0.3 在每次 `pio run` 时**自动生成** `app_example/_pio_src_fragment.cmake`：
 
 ```cmake
-# Auto-generated by platform-amebartos. Do not edit.
+# Auto-generated by platform-realtek-ameba. Do not edit.
 ameba_list_append(private_sources
     /path/to/project/src/main.c
     /path/to/project/src/blink_helpers.c

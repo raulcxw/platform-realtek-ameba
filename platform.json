@@ -1,5 +1,5 @@
 {
-  "name": "amebartos",
+  "name": "realtek-ameba",
   "title": "Realtek Ameba RTOS",
   "description": "Realtek Ameba family of Wi-Fi + Bluetooth IoT MCUs (RTL8710 / RTL8720 / RTL8721 / RTL8730 series). Backed by the official ameba-rtos SDK. Supports the AmebaGreen2 (RTL8721F dual-core KM4TZ + KM4NS), AmebaSmart, AmebaPro2, AmebaZ2 and friends.",
   "homepage": "https://www.realmcu.com/",
@@ -21,14 +21,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/raul-chen/platform-amebartos.git"
+    "url": "https://github.com/raul-chen/platform-realtek-ameba.git"
   },
-  "version": "0.3.0-dev",
+  "version": "0.3.1-dev",
   "frameworks": {
-    "ambsdk": {
-      "script": "builder/frameworks/ambsdk.py",
+    "ameba-rtos": {
+      "script": "builder/frameworks/ameba-rtos.py",
       "title": "Ameba RTOS SDK",
-      "description": "Realtek official ameba-rtos SDK with built-in CMake/Ninja build system. Wraps `ameba.py build/flash/clean` so PlatformIO drives the upstream toolchain directly. The SDK checkout is located via $AMEBA_SDK_DIR or the default ~/projects/ameba-rtos. v0.1: not distributed as a PIO package."
+      "description": "Realtek official ameba-rtos SDK (https://github.com/Ameba-AIoT/ameba-rtos) with built-in CMake/Ninja build system. Wraps `ameba.py build/flash/clean` so PlatformIO drives the upstream toolchain directly. The SDK checkout is located via $AMEBA_SDK_DIR or the default ~/projects/ameba-rtos. v0.1: not distributed as a PIO package."
     }
   },
   "packages": {}

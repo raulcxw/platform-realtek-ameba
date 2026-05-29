@@ -2,7 +2,7 @@
  * src/blink_helpers.c — second source file demonstrating multi-file user code.
  *
  * v0.3 EXTERN_DIR auto-bridge: this file is auto-collected by
- * platform-amebartos and registered to the SDK build via
+ * platform-realtek-ameba and registered to the SDK build via
  * app_example/_pio_src_fragment.cmake (regenerated each `pio run`).
  */
 

@@ -1,12 +1,12 @@
 {
   "build": {
-    "core": "ambsdk",
+    "core": "ameba-rtos",
     "cpu": "cortex-m33",
     "extra_flags": "-DRTL8721F -DAMEBAGREEN2",
     "f_cpu": "200000000L",
     "mcu": "rtl8721f",
     "soc": "RTL8721F",
-    "ambsdk": {
+    "ameba-rtos": {
       "family": "amebagreen2",
       "asdk_version": "12.3.1",
       "default_app": "default",
@@ -22,7 +22,7 @@
     "default_tool": "openocd"
   },
   "frameworks": [
-    "ambsdk"
+    "ameba-rtos"
   ],
   "name": "Realtek RTL8721F (AmebaGreen2)",
   "upload": {

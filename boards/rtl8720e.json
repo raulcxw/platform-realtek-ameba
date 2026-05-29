@@ -1,12 +1,12 @@
 {
   "build": {
-    "core": "ambsdk",
+    "core": "ameba-rtos",
     "cpu": "cortex-m33",
     "extra_flags": "-DRTL8720E -DAMEBALITE",
     "f_cpu": "100000000L",
     "mcu": "rtl8720e",
     "soc": "RTL8720E",
-    "ambsdk": {
+    "ameba-rtos": {
       "family": "amebalite",
       "asdk_version": "10.3.1",
       "default_app": "default"
@@ -21,7 +21,7 @@
     "default_tool": "openocd"
   },
   "frameworks": [
-    "ambsdk"
+    "ameba-rtos"
   ],
   "name": "Realtek RTL8720E (AmebaLite)",
   "upload": {

@@ -9,7 +9,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-"""platform-amebartos: PlatformIO entry for the Realtek Ameba RTOS SDK.
+"""platform-realtek-ameba: PlatformIO entry for the Realtek Ameba RTOS SDK.
 
 Strategy (mirrors LibreTiny's "delegate to upstream" pattern, NOT espidf's
 "reimplement CMake build"):
@@ -25,6 +25,11 @@ Strategy (mirrors LibreTiny's "delegate to upstream" pattern, NOT espidf's
 
 The result: roughly 200 LoC of glue code instead of the ~2,300 LoC of
 ``platform-espressif32/builder/frameworks/espidf.py``.
+
+Naming note: the PlatformIO ``framework`` is called ``ameba-rtos`` to match
+the upstream Realtek SDK repository name (github.com/Ameba-AIoT/ameba-rtos).
+The platform itself is called ``realtek-ameba`` to follow the PIO convention
+of vendor-prefixed platform IDs (cf. platform-espressif32, platform-ststm32).
 """
 
 import os
@@ -35,7 +40,7 @@ from platformio.public import PlatformBase
 IS_WINDOWS = sys.platform.startswith("win")
 
 
-class AmebartosPlatform(PlatformBase):
+class RealtekAmebaPlatform(PlatformBase):
     """PlatformIO platform for Realtek Ameba RTOS."""
 
     def configure_default_packages(self, variables, targets):

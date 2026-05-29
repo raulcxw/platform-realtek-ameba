@@ -1,6 +1,6 @@
 # 架构边界与能力对比
 
-> **目的**：给未来贡献者、code review、PIO Registry 审稿人一份诚实的能力盘点，说清楚 platform-amebartos 在 PIO 生态里能干什么、不能干什么、以及为什么这么取舍。
+> **目的**：给未来贡献者、code review、PIO Registry 审稿人一份诚实的能力盘点，说清楚 platform-realtek-ameba 在 PIO 生态里能干什么、不能干什么、以及为什么这么取舍。
 >
 > **基准对比对象**：[`platform-espressif32`](https://github.com/platformio/platform-espressif32)（PIO 官方维护的 ESP-IDF 平台），是同类"vendor SDK 接入 PIO"任务里最成熟的样本。
 
@@ -8,7 +8,7 @@
 
 ## 1. 设计哲学的根本差异
 
-| 维度 | platform-amebartos（本项目） | platform-espressif32（参照系） |
+| 维度 | platform-realtek-ameba（本项目） | platform-espressif32（参照系） |
 |---|---|---|
 | **设计哲学** | **黑盒委托**：subprocess 调 `ameba.py build/flash` | **白盒解析**：CMake File API + PIO 接管编译图 |
 | **PIO 与编译过程的关系** | 完全不参与，只 `subprocess.call` 然后等结果 | 解析每个组件的 includes/defines/flags，自己 dispatch |
@@ -27,26 +27,26 @@
 
 ### 2.1 核心构建-烧录链路
 
-| 功能 | espressif32 | amebartos v0.1 | amebartos v0.2 | 备注 |
+| 功能 | espressif32 | realtek-ameba v0.1 | realtek-ameba v0.2 | 备注 |
 |---|---|---|---|---|
 | `pio run`（编译） | 🟢 | 🟢 | 🟢 | RTL8721F 真编通，`firmware.bin` 在 `.pio/build/<env>/` |
 | `pio run -t upload`（烧录） | 🟢 | 🟢 | 🟢 | 含 `--remote-server`/`--remote-password`/`--port`/`--baudrate`/`--memory-type`/`--chip-erase` 透传 |
-| `pio run -t clean` | 🟢 | 🟡 | 🟢 | v0.2 通过 `pio run -t ambsdk-clean` 同步清 SDK + `.pio/` + `compile_commands.json` |
+| `pio run -t clean` | 🟢 | 🟡 | 🟢 | v0.2 通过 `pio run -t ameba-clean` 同步清 SDK + `.pio/` + `compile_commands.json` |
 | 增量编译 | 🟢 智能 | 🟢 但靠上游 | 🟢 同 v0.1 | SDK 内部用 ninja，PIO 没有可见性，全量/增量决策权在 ameba.py 手里 |
 
 ### 2.2 开发体验功能
 
-| 功能 | espressif32 | amebartos v0.1 | amebartos v0.2 | 影响面 |
+| 功能 | espressif32 | realtek-ameba v0.1 | realtek-ameba v0.2 | 影响面 |
 |---|---|---|---|---|
 | **VSCode IntelliSense**（写代码补全/跳转） | 🟢 强 | 🔴 **无** | 🟢 **支持** | v0.2 自动导出 cmake 生成的 `compile_commands.json`（627 条目，7.1 MB）到工程根 + `.pio/build/<env>/` |
-| `pio device monitor`（串口监视器） | 🟢 | 🔴 暂不支持 | 🟢 `pio run -t monitor_ambsdk` | 透传 `--remote-server`/`--remote-password`/`--port`/`--baudrate`，已对真硬件 COM40 验证连接 |
+| `pio device monitor`（串口监视器） | 🟢 | 🔴 暂不支持 | 🟢 `pio run -t monitor_ameba` | 透传 `--remote-server`/`--remote-password`/`--port`/`--baudrate`，已对真硬件 COM40 验证连接 |
 | `pio run -t menuconfig`（图形化 SDK 配置） | 🟢 | 🔴 暂不支持 | 🟢 | v0.2 注册为 PIO custom target，调 `ameba.py menuconfig <SOC>`，curses UI 直通用户终端 |
 | `pio check`（cppcheck/clang-tidy） | 🟢 | 🔴 | 🟡 应该可用 | v0.2 已生成 `compile_commands.json`，PIO check 应该能消费，但未真验证 |
 | `pio debug`（GDB） | 🟢 | 🟡 占位 | 🟡 占位 | platform.py 里写了 OpenOCD/JLink stub，未真验证 |
 
 ### 2.3 PIO 生态深度集成
 
-| 功能 | espressif32 | amebartos v0.1 | amebartos v0.2 | 是否计划做 |
+| 功能 | espressif32 | realtek-ameba v0.1 | realtek-ameba v0.2 | 是否计划做 |
 |---|---|---|---|---|
 | `pio lib install` PIO 库管理 | 🟢 | 🔴 **不支持** | 🔴 **不支持** | 🟡 v1.0 不做（哲学冲突），v1.1+ 视社区需求开 git URL + portable 库支持，详见 §3.4 |
 | `lib_deps` 自动拉外部库 | 🟢 | 🔴 | 🔴 | 🟡 同上 |
@@ -64,7 +64,7 @@
 **v0.1 时的痛点**（保留作为历史记录）：
 
 ```c
-// platform-amebartos v0.1 🔴
+// platform-realtek-ameba v0.1 🔴
 #include "wifi_api.h"      // 红波浪线："找不到此文件"（实际编译没问题）
 int x = wifi_init();        // 没有补全、没有签名提示
 ```
@@ -89,12 +89,12 @@ def _export_compile_commands():
 每次 `pio run` 后端的 `build_firmware()` 自动调一次。**用户体验**：
 
 ```c
-// platform-amebartos v0.2 ✅
+// platform-realtek-ameba v0.2 ✅
 #include "wifi_api.h"      // 自动补全可用，跳转定义可用
 int x = wifi_init();        // 函数签名提示
 ```
 
-**已验证**：在 RTL8721F 工程跑 `pio run` 后，`compile_commands.json` 准确出现在两个位置，体积 7.1 MB（627 条目），编译器路径 `.platformio/platforms/amebartos/.cache/rtk-toolchain/asdk-12.3.1-4600/.../arm-none-eabi-gcc` 正确（VSCode/clangd 直接能用）。
+**已验证**：在 RTL8721F 工程跑 `pio run` 后，`compile_commands.json` 准确出现在两个位置，体积 7.1 MB（627 条目），编译器路径 `.platformio/platforms/realtek-ameba/.cache/rtk-toolchain/asdk-12.3.1-4600/.../arm-none-eabi-gcc` 正确（VSCode/clangd 直接能用）。
 
 ### 3.2 `pio device monitor` —— ✅ v0.2 已支持（含双向交互）
 
@@ -104,17 +104,17 @@ int x = wifi_init();        // 函数签名提示
 
 ```python
 env.AddCustomTarget(
-    name="monitor_ambsdk",
+    name="monitor_ameba",
     dependencies=None,
     actions=serial_monitor,
-    title="Serial Monitor (ambsdk)",
+    title="Serial Monitor (ameba-rtos)",
 )
 ```
 
 **用法**：
 
 ```bash
-pio run -t monitor_ambsdk          # 走 [env] 里 board_upload.* / upload_port
+pio run -t monitor_ameba          # 走 [env] 里 board_upload.* / upload_port
 
 # 在 platformio.ini 里加 custom_monitor_reset = yes 可触发软重启抓 boot log
 # 在 platformio.ini 里加 custom_monitor_no_console = yes 强制非交互
@@ -130,7 +130,7 @@ pio run -t monitor_ambsdk          # 走 [env] 里 board_upload.* / upload_port
 也就是说**完全等同于本地串口体验**：能看 boot log、能发命令、能读内存。
 
 > **为什么不直接接 PIO 内置的 `pio device monitor`?**  
-> PIO 的 monitor 走 pyserial 打开本机串口，**不支持 Realtek 远程串口服务器**（一种 socket 协议）。所以我们注册了独立的 `monitor_ambsdk` target 调上游 `ameba.py monitor`，它原生懂这个协议。
+> PIO 的 monitor 走 pyserial 打开本机串口，**不支持 Realtek 远程串口服务器**（一种 socket 协议）。所以我们注册了独立的 `monitor_ameba` target 调上游 `ameba.py monitor`，它原生懂这个协议。
 
 > **v0.2 关键波特率默认值**：Ameba SDK 的 LogUART 全 SoC 硬编码 `LOGUART_BAUDRATE=1500000`（搜 `component/at_cmd/atcmd_bt_mp.c:25`），不是 PIO 默认的 9600，也不是常见的 115200。`builder/main.py` 把 `monitor_speed` 默认值改成 1500000，避免新手用户连接看到一片乱码就以为坏了。
 
@@ -201,7 +201,7 @@ if not lb.is_frameworks_compatible(env.get("PIOFRAMEWORK")):
     return False
 ```
 
-→ `platform = amebartos` + `framework = ambsdk` 来调任何库时，**默认全跳过**，因为没有库声明兼容这个平台/框架。
+→ `platform = realtek-ameba` + `framework = ameba-rtos` 来调任何库时，**默认全跳过**，因为没有库声明兼容这个平台/框架。
 
 实际能编的库需满足：
 1. **声明 `framework: ["*"]` 或不声明**（纯 portable C/C++ 库），且
@@ -237,7 +237,7 @@ lib_deps =
     https://github.com/h2non/farmhash-cpp.git
 ```
 
-PIO 拉到 `.pio/libdeps/`，**只要源码不依赖 Arduino API**，platform-amebartos 的 builder 理论上能编——因为 v0.3 已经有 `EXTRA_CFLAGS` 透传机制，把库源码 + include 写进一个 `_pio_lib_deps_fragment.cmake` 让 SDK 的 `app_example/CMakeLists.txt` include 即可。
+PIO 拉到 `.pio/libdeps/`，**只要源码不依赖 Arduino API**，platform-realtek-ameba 的 builder 理论上能编——因为 v0.3 已经有 `EXTRA_CFLAGS` 透传机制，把库源码 + include 写进一个 `_pio_lib_deps_fragment.cmake` 让 SDK 的 `app_example/CMakeLists.txt` include 即可。
 
 技术路径**已经铺好**，没启用而已。
 
@@ -264,9 +264,9 @@ PIO 拉到 `.pio/libdeps/`，**只要源码不依赖 Arduino API**，platform-am
 | 功能 | 实际代码量 | 验证 |
 |---|---|---|
 | `compile_commands.json` 导出（IntelliSense）| ~25 行 | ✅ 7.1 MB / 627 条目，工程根 + `.pio/build/<env>/` 双份 |
-| `pio run -t monitor_ambsdk` 接入 | ~40 行 | ✅ 真硬件 COM40 连接成功 |
+| `pio run -t monitor_ameba` 接入 | ~40 行 | ✅ 真硬件 COM40 连接成功 |
 | `pio run -t menuconfig` 接入 | ~20 行 | ✅ Kconfig 加载到 curses UI 入口（终端中可交互）|
-| `pio run -t ambsdk-clean` 完整化 | ~25 行 | ✅ 同步清 SDK build_<SOC>/ + .pio/ + 工程根 compile_commands.json |
+| `pio run -t ameba-clean` 完整化 | ~25 行 | ✅ 同步清 SDK build_<SOC>/ + .pio/ + 工程根 compile_commands.json |
 | 多 env 并行隔离（`TARGET_SOC` env var）| ~5 行（核心 1 行）| ✅ rtl8721f 与 rtl8730e 串行编互不干扰 |
 | **总计 v0.2 增量** | **~120 行**（少于原估计 300）| 全部 ✅ |
 
@@ -307,7 +307,7 @@ PIO 拉到 `.pio/libdeps/`，**只要源码不依赖 Arduino API**，platform-am
 
 实际开发者从 v0.1 升 v0.2 体验差距：
 - 写代码：从"红波浪线一片"到"VSCode 智能提示完整可用"
-- 烧录后看输出：从"开第二个终端 + 手敲 ameba.py monitor"到"`pio run -t monitor_ambsdk`"
+- 烧录后看输出：从"开第二个终端 + 手敲 ameba.py monitor"到"`pio run -t monitor_ameba`"
 - 改 SDK 配置：从"只能命令行 ameba.py menuconfig"到"`pio run -t menuconfig`"
 - 多 SoC 工程：从"一会儿改对一会儿改错"到"完全可靠"
 
