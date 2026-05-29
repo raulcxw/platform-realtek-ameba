@@ -40,8 +40,15 @@ from platformio.public import PlatformBase
 IS_WINDOWS = sys.platform.startswith("win")
 
 
-class RealtekAmebaPlatform(PlatformBase):
-    """PlatformIO platform for Realtek Ameba RTOS."""
+class RealtekamebaPlatform(PlatformBase):
+    """PlatformIO platform for Realtek Ameba RTOS.
+
+    Class name follows PIO convention: ``PlatformFactory.get_clsname()`` strips
+    ``-``/``_`` from ``platform.json:name`` and only capitalizes the first
+    letter. So ``realtek-ameba`` → ``RealtekamebaPlatform`` (NOT
+    ``RealtekAmebaPlatform``). Don't "fix" this casing — PIO won't find the
+    class.
+    """
 
     def configure_default_packages(self, variables, targets):
         # ARM toolchain (asdk-12.3.1 / asdk-10.3.1) is fetched on-demand by
