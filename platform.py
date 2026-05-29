@@ -177,8 +177,95 @@ class RealtekamebaPlatform(PlatformBase):
             ) from exc
 
         self._write_package_json(pkg_dir, source="git")
+        self._setup_sdk_venv(pkg_dir)
         sys.stderr.write(f"[realtek-ameba] SDK installed at {pkg_dir}\n")
         return pkg_dir
+
+    def _setup_sdk_venv(self, sdk_dir):
+        """Create the SDK Python venv and pip-install tools/requirements.txt.
+
+        The upstream ``ameba.py`` build pipeline relies on Python helpers
+        (``axf2bin.py``, ``menuconfig.py``, etc.) that import third-party
+        modules — most critically ``json5``, which CMake calls during
+        ``ameba_soc_project_check`` before any source compilation. Without
+        a populated ``$SDK/.venv``, cmake configure dies with::
+
+            ERROR
+            ➜ Miss module: json5
+            ➜ Install by: pip install -r .../tools/requirements.txt
+
+        The SDK ships ``env.sh`` to do this interactively for human
+        developers, but PIO users never source it. We replicate the venv
+        creation + pip install non-interactively here so first ``pio run``
+        works out of the box.
+
+        Idempotent: if the venv already has json5 importable, skip.
+        """
+        venv_dir = os.path.join(sdk_dir, ".venv")
+        venv_python = os.path.join(venv_dir, "bin", "python3")
+        requirements = os.path.join(sdk_dir, "tools", "requirements.txt")
+
+        if not os.path.isfile(requirements):
+            sys.stderr.write(
+                f"[realtek-ameba] no tools/requirements.txt at {requirements}, "
+                f"skipping venv setup (SDK layout may have changed)\n"
+            )
+            return
+
+        # Idempotency check: probe-import json5 in the existing venv.
+        if os.path.isfile(venv_python):
+            try:
+                subprocess.check_call(
+                    [venv_python, "-c", "import json5"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return  # venv already healthy
+            except (subprocess.CalledProcessError, OSError):
+                pass  # fall through, rebuild
+
+        sys.stderr.write(
+            f"[realtek-ameba] creating SDK venv at {venv_dir} and installing "
+            f"requirements (one-time, ~30 seconds)\n"
+        )
+
+        # Wipe a stale/partial venv before recreating.
+        if os.path.isdir(venv_dir):
+            shutil.rmtree(venv_dir)
+
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "venv", venv_dir],
+                stdout=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"[realtek-ameba] failed to create SDK venv at {venv_dir}: {exc}"
+            ) from exc
+
+        # Use a domestic pip mirror by default for China-locale users (where
+        # pypi.org timeouts are common). Override with $PIP_INDEX_URL upstream
+        # if you want pypi.org or a private mirror.
+        pip_args = [
+            os.path.join(venv_dir, "bin", "pip"),
+            "install",
+            "--quiet",
+            "-r",
+            requirements,
+        ]
+        if not os.environ.get("PIP_INDEX_URL"):
+            pip_args[2:2] = [
+                "-i",
+                "https://pypi.tuna.tsinghua.edu.cn/simple",
+            ]
+        try:
+            subprocess.check_call(pip_args)
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"[realtek-ameba] pip install -r {requirements} failed (exit "
+                f"{exc.returncode}). Manual fix: cd {sdk_dir} && "
+                f"python -m venv .venv && .venv/bin/pip install -r {requirements}"
+            ) from exc
 
     def _packages_dir(self):
         """Resolve ~/.platformio/packages/framework-ameba-rtos.

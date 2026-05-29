@@ -32,5 +32,11 @@
       "description": "Realtek official ameba-rtos SDK (https://github.com/Ameba-AIoT/ameba-rtos) with built-in CMake/Ninja build system. Wraps `ameba.py build/flash/clean` so PlatformIO drives the upstream toolchain directly. v0.3.2: SDK is cloned by platform.py on first build (no submodules, ~30 MB). Override with $AMEBA_SDK_DIR for a local checkout, or $AMEBA_SDK_GIT_URL for a fork/mirror."
     }
   },
-  "packages": {}
+  "packages": {
+    "framework-ameba-rtos": {
+      "type": "framework",
+      "optional": true,
+      "version": "*"
+    }
+  }
 }
