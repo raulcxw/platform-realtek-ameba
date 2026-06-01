@@ -100,7 +100,9 @@ _soc = board.get("build.soc")
 if not _soc:
     sys.stderr.write(f"Error: missing 'build.soc' in {board.id}.json\n")
     env.Exit(1)
-SOC = _soc.upper()
+# Pass through verbatim — ameba.py is case-sensitive (e.g. RTL8721Dx, not
+# RTL8721DX). Whatever the board manifest declares is the canonical name.
+SOC = _soc
 PROJECT_DIR = env.subst("$PROJECT_DIR")
 PROJECT_BUILD_DIR = env.subst("$BUILD_DIR")
 ENV_NAME = env.subst("$PIOENV") or "default"
@@ -582,6 +584,13 @@ def clean_all(*_args, **_kwargs):
     if isfile(fragment):
         print(f"[ameba] rm {fragment}")
         os.remove(fragment)
+
+    # 5. clean soc_info.json (SDK's per-project SoC cache; stale entries
+    #    can cause "Invalid SOC name" warnings on rebuild).
+    soc_info = join(PROJECT_DIR, "soc_info.json")
+    if isfile(soc_info):
+        print(f"[ameba] rm {soc_info}")
+        os.remove(soc_info)
 
 
 # -----------------------------------------------------------------------------
