@@ -1,7 +1,7 @@
 {
   "name": "realtek-ameba",
   "title": "Realtek Ameba RTOS",
-  "description": "Realtek Ameba family of Wi-Fi + Bluetooth IoT MCUs (RTL8710 / RTL8720 / RTL8721 / RTL8730 series). Backed by the official ameba-rtos SDK. Supports the AmebaGreen2 (RTL8721F dual-core KM4TZ + KM4NS), AmebaSmart, AmebaPro2, AmebaZ2 and friends.",
+  "description": "Realtek Ameba family of Wi-Fi + Bluetooth Low Power IoT SoCs. Backed by the official ameba-rtos SDK.",
   "homepage": "https://www.realmcu.com/",
   "license": "Apache-2.0",
   "keywords": [
