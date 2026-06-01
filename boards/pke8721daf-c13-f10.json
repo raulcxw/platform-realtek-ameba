@@ -2,15 +2,10 @@
   "build": {
     "core": "ameba-rtos",
     "cpu": "cortex-m33",
-    "extra_flags": "-DRTL8721Dx -DAMEBADPLUS",
-    "f_cpu": "150000000L",
-    "mcu": "rtl8721dx",
-    "soc": "RTL8721Dx",
-    "ameba-rtos": {
-      "family": "amebadplus",
-      "asdk_version": "10.3.1",
-      "default_app": "default"
-    }
+    "extra_flags": "-DRTL8721Dx",
+    "f_cpu": "345000000L",
+    "mcu": "rtl8721daf",
+    "soc": "RTL8721Dx"
   },
   "connectivity": [
     "wifi",
@@ -23,7 +18,7 @@
   "frameworks": [
     "ameba-rtos"
   ],
-  "name": "Realtek RTL8721Dx (AmebaD-Plus)",
+  "name": "PKE8721DAF-C13-F10 (RTL8721DAF)",
   "upload": {
     "maximum_ram_size": 524288,
     "maximum_size": 4194304,
@@ -34,6 +29,6 @@
       "jlink"
     ]
   },
-  "url": "https://www.realmcu.com/en/Home/Products/Detail/RTL8721Dx",
+  "url": "https://aiot.realmcu.com/zh/center/hardware/detail/56",
   "vendor": "Realtek"
 }

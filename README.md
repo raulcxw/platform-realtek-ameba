@@ -3,7 +3,7 @@
 PlatformIO platform for the **Realtek Ameba** family of Wi-Fi + Bluetooth
 IoT MCUs, backed by the official `ameba-rtos` SDK.
 
-> **Status:** v0.2.0-dev — Linux only. RTL8721F (AmebaGreen2) verified
+> **Status:** v0.2.0-dev — Linux only. RTL8721DAF verified
 > end-to-end via `ameba.py build` + remote-serial flash. v0.2 brings
 > VSCode IntelliSense, `pio run -t monitor_ameba`, `pio run -t menuconfig`,
 > `pio run -t ameba-clean`, and safe multi-env parallel builds.
@@ -14,22 +14,20 @@ The existing community options are:
 
 - **`platform-realtek-ameba`** (8devices, 2017): targets RTL8710 only, links
   to dead Bintray binaries, uses PlatformIO v3 conventions.
-- **`LibreTiny`**: covers RTL8710BN / AmebaZ2 well, but does not track the
-  upstream Realtek SDK and has no path forward to RTL8721F / RTL8730E.
+- **`LibreTiny`**: covers RTL8710BN well, but does not track the
+  upstream Realtek SDK and has no path forward to RTL8721DAF / RTL8710ECF / RTL8713ECM.
 
 This platform takes a different approach: **delegate everything to the
 upstream `ameba.py`** (CMake + Ninja + asdk toolchain are SDK-managed). The
 glue layer is ~200 LoC instead of LibreTiny's full reimplementation.
 
-## Supported SoCs (planned)
+## Supported Development Boards
 
-| SoC | Series | Toolchain | Status |
+| Board | MCU (料号) | Spec | Status |
 |---|---|---|---|
-| RTL8721F | AmebaGreen2 | asdk-12.3.1 | ✅ build works |
-| RTL8730E | AmebaSmart | asdk-12.3.1 | ⏳ not started |
-| RTL8720F | AmebaPro2 | asdk-12.3.1 | ⏳ not started |
-| RTL8710BN/F | AmebaZ2 | asdk-10.3.1 | ⏳ not started |
-| RTL8711F | AmebaLite | asdk-12.3.1 | ⏳ not started |
+| **PKE8721DAF-C13-F10** | RTL8721DAF | KM4(345MHz)+KM0, Wi-Fi 4 + BLE 5.0 | ✅ build works |
+| **PKE8710ECF-C53-F20** | RTL8710ECF | KM4(400MHz)+KR4, Wi-Fi 6 + BLE 5.2 | ⏳ not started |
+| **PKE8713ECM-VA4-N43** | RTL8713ECM | HiFi5+KM4+KR4, Wi-Fi 6 + BLE 5.2 + Audio | ⏳ not started |
 
 ## Quick start (developer mode)
 
@@ -40,10 +38,10 @@ pio platform install file:///path/to/platform-realtek-ameba
 # 2. New project
 mkdir my-ameba-app && cd my-ameba-app
 cat > platformio.ini <<'EOF'
-[env:rtl8721f]
+[env:pke8721daf-c13-f10]
 platform = realtek-ameba
 framework = ameba-rtos
-board = rtl8721f
+board = pke8721daf-c13-f10
 EOF
 
 # 3. Build
@@ -68,7 +66,7 @@ pio run -t upload
 
 | Feature | v0.1 | v0.2 | Notes |
 |---|:---:|:---:|---|
-| `pio run` (build) | ✅ | ✅ | RTL8721F verified end-to-end |
+| `pio run` (build) | ✅ | ✅ | RTL8721DAF verified end-to-end |
 | `pio run -t upload` | ✅ | ✅ | Local + remote-serial (`board_upload.remote_server`) |
 | `pio run -t ameba-clean` | 🟡 | ✅ | v0.2: cleans SDK + `.pio/` + project-root `compile_commands.json` |
 | `pio run -t monitor_ameba` | 🔴 | ✅ | v0.2: `ameba.py monitor`, supports remote serial (verified on real COM40) |

@@ -1,0 +1,34 @@
+{
+  "build": {
+    "core": "ameba-rtos",
+    "cpu": "cortex-m33",
+    "extra_flags": "-DRTL8713E",
+    "f_cpu": "400000000L",
+    "mcu": "rtl8713ecm",
+    "soc": "RTL8713E"
+  },
+  "connectivity": [
+    "wifi",
+    "bluetooth"
+  ],
+  "debug": {
+    "openocd_target": "rtl8713e.cfg",
+    "default_tool": "openocd"
+  },
+  "frameworks": [
+    "ameba-rtos"
+  ],
+  "name": "PKE8713ECM-VA4-N43 (RTL8713ECM)",
+  "upload": {
+    "maximum_ram_size": 786432,
+    "maximum_size": 33554432,
+    "protocol": "ameba",
+    "protocols": [
+      "ameba",
+      "openocd",
+      "jlink"
+    ]
+  },
+  "url": "https://aiot.realmcu.com/zh/center/hardware/detail/52",
+  "vendor": "Realtek"
+}
