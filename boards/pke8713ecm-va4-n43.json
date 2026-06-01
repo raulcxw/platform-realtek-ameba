@@ -18,6 +18,9 @@
   "frameworks": [
     "ameba-rtos"
   ],
+  "monitor": {
+    "speed": 1500000
+  },
   "name": "PKE8713ECM-VA4-N43 (RTL8713ECM)",
   "upload": {
     "maximum_ram_size": 786432,

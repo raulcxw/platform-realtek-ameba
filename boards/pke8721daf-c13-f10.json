@@ -18,6 +18,9 @@
   "frameworks": [
     "ameba-rtos"
   ],
+  "monitor": {
+    "speed": 1500000
+  },
   "name": "PKE8721DAF-C13-F10 (RTL8721DAF)",
   "upload": {
     "maximum_ram_size": 524288,

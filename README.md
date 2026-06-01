@@ -40,18 +40,11 @@ EOF
 # 3. Build
 pio run
 
-# 4. Flash (USB)
+# 4. Flash
 pio run -t upload
 
-# 5. Flash via remote serial server (Windows COM relayed to Linux)
-#    Add to platformio.ini under [env:...]:
-#      board_upload.remote_server   = 127.0.0.1
-#      board_upload.remote_password = ********
-#      board_upload.remote_port     = COM40
-pio run -t upload
-
-# 6. Open serial monitor (1.5 Mbps LogUART by default; remote-serial aware)
-pio run -t monitor_ameba
+# 5. Open serial monitor (1.5 Mbps LogUART preset on the supplied boards)
+pio device monitor
 ```
 
 ## PIO feature support
@@ -59,8 +52,8 @@ pio run -t monitor_ameba
 | Feature | Supported | Notes |
 |---|:---:|---|
 | `pio run` (build) | ✅ | Delegated to `ameba.py build` |
-| `pio run -t upload` | ✅ | Local USB and remote-serial server |
-| `pio run -t monitor_ameba` | ✅ | Wraps `ameba.py monitor`, remote-serial aware |
+| `pio run -t upload` | ✅ | Delegated to `ameba.py flash` |
+| `pio device monitor` | ✅ | Standard PIO miniterm; defaults to 1.5 Mbps LogUART |
 | `pio run -t menuconfig` | ✅ | Hands off to `ameba.py menuconfig <SOC>` curses UI |
 | `pio run -t ameba-clean` | ✅ | Cleans SDK build, `.pio/`, and stale `compile_commands.json` |
 | VSCode IntelliSense | ✅ | Auto-exports `compile_commands.json` from the SDK build |

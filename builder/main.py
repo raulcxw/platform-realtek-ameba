@@ -3,8 +3,9 @@
 
 """platform-realtek-ameba main builder entry.
 
-Wires PlatformIO's standard targets (`pio run`, `upload`, `clean`, `menuconfig`, 
-`device monitor`) directly to the upstream `ameba.py` CLI.
+Wires PlatformIO's standard targets (`pio run`, `upload`, `clean`, `menuconfig`)
+directly to the upstream `ameba.py` CLI. Serial monitor (`pio device monitor`)
+uses PIO's built-in miniterm — no platform glue needed.
 
 The build is invoked with `cwd=$PROJECT_DIR` (EXTERN_DIR mode).
 This keeps `build_<SOC>/` inside the user's project, preserves absolute paths 
@@ -307,7 +308,7 @@ def _ameba_python():
 
 
 def _ameba_py_args(action, soc=SOC, clean=False, upload_opts=None,
-                   menuconfig_opts=None, monitor_opts=None):
+                   menuconfig_opts=None):
     """Translate PIO target -> ameba.py argv.
 
     Returns a list of subprocess argv lists to run in order.
@@ -342,20 +343,8 @@ def _ameba_py_args(action, soc=SOC, clean=False, upload_opts=None,
         if menuconfig_opts:
             mc_args.extend(menuconfig_opts)
         return [mc_args]
-    elif action == "monitor":
-        mon_args = base + ["monitor"]
-        if monitor_opts:
-            for k, v in monitor_opts.items():
-                if v is None or v is False:
-                    continue
-                mon_args.append(f"--{k.replace('_', '-')}"
-                                if not k.startswith("-") else k)
-                if v is not True:
-                    mon_args.append(str(v))
-        return [mon_args]
     else:
         raise ValueError(f"unknown action {action!r}")
-
 
 # -----------------------------------------------------------------------------
 # compile_commands.json export (VSCode IntelliSense)
@@ -438,20 +427,6 @@ def upload_firmware(*_args, **_kwargs):
     if speed:
         upload_opts["baudrate"] = speed
 
-    remote_server = (
-        env.GetProjectOption("board_upload.remote_server", None)
-        or board.get("upload.remote_server", None)
-    )
-    if remote_server:
-        upload_opts["remote-server"] = remote_server
-
-    remote_password = (
-        env.GetProjectOption("board_upload.remote_password", None)
-        or board.get("upload.remote_password", None)
-    )
-    if remote_password:
-        upload_opts["remote-password"] = remote_password
-
     memory_type = (
         env.GetProjectOption("board_upload.memory_type", None)
         or board.get("upload.memory_type", None)
@@ -469,59 +444,6 @@ def upload_firmware(*_args, **_kwargs):
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
         print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
         # Flash runs from PROJECT_DIR
-        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
-        if rc != 0:
-            env.Exit(rc)
-
-
-def serial_monitor(*_args, **_kwargs):
-    import subprocess
-
-    sdk_env = _make_sdk_env()
-    monitor_opts = {}
-
-    port = (env.subst("$MONITOR_PORT") or env.subst("$UPLOAD_PORT")
-            or board.get("upload.port", ""))
-    if port:
-        monitor_opts["port"] = port
-
-    # Ameba LogUART defaults to 1500000 baud.
-    speed = env.subst("$MONITOR_SPEED") or "1500000"
-    if speed:
-        monitor_opts["baudrate"] = speed
-
-    remote_server = (
-        env.GetProjectOption("board_upload.remote_server", None)
-        or env.GetProjectOption("custom_monitor_remote_server", None)
-        or board.get("upload.remote_server", None)
-    )
-    if remote_server:
-        monitor_opts["remote-server"] = remote_server
-
-    remote_password = (
-        env.GetProjectOption("board_upload.remote_password", None)
-        or env.GetProjectOption("custom_monitor_remote_password", None)
-        or board.get("upload.remote_password", None)
-    )
-    if remote_password:
-        monitor_opts["remote-password"] = remote_password
-
-    if env.GetProjectOption("custom_monitor_reset", "no").lower() in (
-        "yes", "true", "1"
-    ):
-        monitor_opts["-reset"] = True
-
-    if not sys.stdin.isatty() or env.GetProjectOption(
-        "custom_monitor_no_console", "no"
-    ).lower() in ("yes", "true", "1"):
-        monitor_opts["no-console"] = True
-
-    print(f"[ameba] monitor SoC={SOC}, opts={monitor_opts}")
-    print("[ameba] (press Ctrl+C to exit; if board is silent, the firmware "
-          "is probably idle -- set 'custom_monitor_reset = yes' in [env] to "
-          "force a soft reset and capture boot log)")
-    for cmd in _ameba_py_args("monitor", soc=SOC, monitor_opts=monitor_opts):
-        print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
         rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             env.Exit(rc)
@@ -593,15 +515,6 @@ env.AddCustomTarget(
     title="Menuconfig",
     description="Run interactive Kconfig menuconfig (delegates to "
                 "`ameba.py menuconfig <SOC>`)",
-)
-
-env.AddCustomTarget(
-    name="monitor_ameba",
-    dependencies=None,
-    actions=serial_monitor,
-    title="Serial Monitor (ameba-rtos)",
-    description="Open serial monitor via `ameba.py monitor` "
-                "(supports board_upload.remote_server)",
 )
 
 env.AddCustomTarget(
