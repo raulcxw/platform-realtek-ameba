@@ -4,7 +4,7 @@
     "cpu": "cortex-m33",
     "extra_flags": "-DRTL8710E",
     "f_cpu": "400000000L",
-    "mcu": "rtl8710ecf",
+    "mcu": "RTL8710E",
     "soc": "RTL8710E"
   },
   "connectivity": [
