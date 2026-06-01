@@ -3,47 +3,12 @@
 
 """platform-realtek-ameba main builder entry.
 
-Wires PlatformIO's ``pio run`` / ``pio run -t upload`` / ``pio run -t clean``
-/ ``pio run -t menuconfig`` / ``pio device monitor`` targets to the upstream
-``ameba.py`` CLI.
+Wires PlatformIO's standard targets (`pio run`, `upload`, `clean`, `menuconfig`, 
+`device monitor`) directly to the upstream `ameba.py` CLI.
 
-v0.3 architectural shift (EXTERN_DIR mode):
-  ``ameba.py build`` is now invoked with ``cwd=$PROJECT_DIR`` instead of
-  ``cwd=$SDK_DIR``. The SDK auto-detects this as an "external project" and
-  passes ``-DEXTERN_DIR=<PROJECT_DIR>`` to its cmake invocation. This:
-
-  * Makes user code in ``app_example/`` (the SDK's required user code dir)
-    AND optional ``src/`` actually compile -- previously only SDK examples
-    compiled.
-  * Routes GCC compile errors with absolute paths under PROJECT_DIR so
-    IDEs (VSCode/CLion) can jump to the correct line.
-  * Puts ``build_<SOC>/`` under PROJECT_DIR, never touching the SDK tree
-    (preserves the "SDK 0 modifications" hard contract).
-  * Allows ``compile_commands.json`` for IntelliSense to live next to the
-    user's code.
-
-The PIO project layout for v0.3 looks like:
-
-    my-pio-project/
-    ├── platformio.ini
-    ├── CMakeLists.txt          # 1 line: ameba_add_subdirectory(app_example)
-    ├── prj.conf
-    ├── Kconfig
-    ├── src/                    # optional, PIO-standard user code
-    │   └── main.c
-    └── app_example/            # required by SDK; provides app_example()
-        ├── CMakeLists.txt
-        └── app_main.c
-
-We deliberately do NOT redefine the cmake build graph -- the SDK already
-owns it and changes between SoC generations.
-
-v0.2 features carried forward:
-  * compile_commands.json export (VSCode IntelliSense)
-  * pio device monitor -> ameba.py monitor
-  * pio run -t menuconfig -> ameba.py menuconfig
-  * pio run -t clean cleans .pio/ + build_<SOC>/ as well
-  * Per-env TARGET_SOC isolation so 'pio run -e a -e b' is safe.
+The build is invoked with `cwd=$PROJECT_DIR` (EXTERN_DIR mode).
+This keeps `build_<SOC>/` inside the user's project, preserves absolute paths 
+for GCC errors, and safely handles parallel multi-env builds.
 """
 
 import os
@@ -69,7 +34,7 @@ board = env.BoardConfig()
 def _find_sdk_dir():
     """Locate the ameba-rtos checkout.
 
-    v0.3.1 strategy: SDK is now distributed as a PIO package via git URL
+    Strategy: SDK is distributed as a PIO package via git URL
     (see platform.json `packages.framework-ameba-rtos`). PIO clones it
     automatically into ~/.platformio/packages/framework-ameba-rtos/ on
     first `pio run`.
@@ -128,17 +93,23 @@ def _find_prebuilts_dir():
 
 SDK_DIR = _find_sdk_dir()
 PREBUILTS_DIR = _find_prebuilts_dir()
-SOC = board.get("build.soc", "RTL8721F").upper()
+# Fetch the 'build.soc' value from the currently active board JSON (e.g., RTL8721Dx).
+# PlatformIO evaluates this script once per environment ([env:xxx]).
+_soc = board.get("build.soc")
+if not _soc:
+    sys.stderr.write(f"Error: missing 'build.soc' in {board.id}.json\n")
+    env.Exit(1)
+SOC = _soc.upper()
 PROJECT_DIR = env.subst("$PROJECT_DIR")
 PROJECT_BUILD_DIR = env.subst("$BUILD_DIR")
 ENV_NAME = env.subst("$PIOENV") or "default"
 
-# v0.3: EXTERN_DIR mode means build_<SOC>/ lives under PROJECT_DIR, not SDK_DIR.
+# EXTERN_DIR mode: build artifacts live under the project, not the SDK.
 EXTERN_BUILD_DIR = join(PROJECT_DIR, f"build_{SOC}")
 
 
 # -----------------------------------------------------------------------------
-# v0.3: External project layout validation + auto-bootstrap
+# External project layout validation
 # -----------------------------------------------------------------------------
 def _ensure_extern_project_layout():
     """Verify the PIO project has the SDK's external-project structure.
@@ -311,7 +282,7 @@ def _make_sdk_env():
             os.pathsep.join(path_parts) + os.pathsep + sdk_env.get("PATH", "")
         )
 
-    # v0.3 #5: pass build_flags through to the SDK cmake.
+    # Pass build_flags through to the SDK cmake.
     # PIO's BUILD_FLAGS / CPPDEFINES come from platformio.ini's build_flags.
     # We forward them as EXTRA_CFLAGS so the SDK toolchain sees them.
     extra_cflags = []
@@ -392,8 +363,7 @@ def _ameba_py_args(action, soc=SOC, clean=False, upload_opts=None,
 def _export_compile_commands():
     """Copy cmake's compile_commands.json into PIO BUILD_DIR + project root.
 
-    v0.3: cmake now writes to ``${PROJECT_DIR}/build_<SOC>/build/compile_commands.json``
-    instead of inside SDK_DIR.
+
     """
     src = join(EXTERN_BUILD_DIR, "build", "compile_commands.json")
     if not isfile(src):
@@ -434,14 +404,14 @@ def build_firmware(*_args, **_kwargs):
 
     for cmd in cmd_chain:
         print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
-        # v0.3 KEY CHANGE: cwd=PROJECT_DIR, not SDK_DIR.
+        # Execute in PROJECT_DIR to trigger external project mode.
         # SDK detects "external project" mode and auto-passes -DEXTERN_DIR.
         rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             print(f"[ameba] command failed (rc={rc})")
             env.Exit(rc)
 
-    # Copy firmware into PIO BUILD_DIR (v0.3: from PROJECT_DIR/build_<SOC>/)
+    # Copy firmware into PIO BUILD_DIR
     src_app = join(EXTERN_BUILD_DIR, "app.bin")
     dst_app = join(PROJECT_BUILD_DIR, "firmware.bin")
     if isfile(src_app):
@@ -498,7 +468,7 @@ def upload_firmware(*_args, **_kwargs):
     print(f"[ameba] uploading SoC={SOC}, opts={upload_opts}")
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
         print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
-        # v0.3: flash also runs from PROJECT_DIR (where build_<SOC>/ lives)
+        # Flash runs from PROJECT_DIR
         rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
         if rc != 0:
             env.Exit(rc)
