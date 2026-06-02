@@ -422,6 +422,14 @@ def _ameba_py_args(action, soc=SOC, clean=False, upload_opts=None,
             for k, v in upload_opts.items():
                 if v is None or v is False:
                     continue
+                # Special case: 'image' is a list of [name, start, end]
+                # triples that must each become a separate `-i N S E` group.
+                # ameba.py's `-i` argparse uses nargs=3 + action='append'.
+                if k == "image" and isinstance(v, list):
+                    for triple in v:
+                        flash_args.append("-i")
+                        flash_args.extend(str(x) for x in triple)
+                    continue
                 flash_args.append(f"--{k}" if k.startswith("-")
                                   else f"--{k.replace('_', '-')}")
                 if v is not True:
@@ -723,6 +731,157 @@ def _print_size_report(size_tool: str, board_obj, cores: list):
         env.Exit(1)
 
 
+def _parse_extra_images(raw: str):
+    """Parse `board_upload.extra_images` from platformio.ini into a list of dicts.
+
+    User format (one per line, whitespace-separated):
+        name_or_path  start_addr  end_addr
+
+    `name_or_path` is either a filename (resolved relative to PROJECT_DIR's
+    build_<SOC>/ tree) or an absolute path. Addresses are 0x-prefixed hex.
+
+    Returns: list of {"path": abspath, "start_addr": int, "end_addr": int,
+                      "label": basename} -- empty if `raw` is empty/None.
+    """
+    out = []
+    if not raw:
+        return out
+    for line_no, line in enumerate(raw.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) != 3:
+            sys.stderr.write(
+                f"[ameba] board_upload.extra_images line {line_no}: expected "
+                f"'<name_or_path> <start_addr> <end_addr>', got {line!r}\n"
+            )
+            env.Exit(1)
+        name_or_path, start_str, end_str = parts
+        try:
+            start_addr = int(start_str, 16)
+            end_addr = int(end_str, 16)
+        except ValueError as ex:
+            sys.stderr.write(
+                f"[ameba] board_upload.extra_images line {line_no}: address "
+                f"parse failed ({ex}); use 0x-prefixed hex.\n"
+            )
+            env.Exit(1)
+            continue  # unreachable, but Pyright wants the binding clear
+        # Resolve path: absolute as-is, relative against PROJECT_DIR
+        if os.path.isabs(name_or_path):
+            path = name_or_path
+        else:
+            path = os.path.realpath(join(PROJECT_DIR, name_or_path))
+        out.append({
+            "path": path,
+            "start_addr": start_addr,
+            "end_addr": end_addr,
+            "label": os.path.basename(name_or_path),
+        })
+    return out
+
+
+def _resolve_default_layout():
+    """Call SDK's parse_project() to get the default 4-region layout.
+
+    Returns list of {"path": abspath, "start_addr": int, "end_addr": int,
+                     "type": "IMG_BOOT"/"IMG_APP_OTA1"/"VFS1"/...} for the
+    current SoC's default partition table.
+
+    The SDK's parse_project() hardcodes build_dir = <sdk_root>/build_<soc>/.
+    We use EXTERN_DIR mode so artifacts are at <PROJECT_DIR>/build_<soc>/.
+    Workaround: create a temporary symlink <sdk_root>/build_<soc> ->
+    <PROJECT_DIR>/build_<soc> for the duration of the call, then remove it.
+    Idempotent: any pre-existing symlink/dir is left alone.
+    """
+    parser_dir = join(SDK_DIR, "tools", "ameba", "ameba_dev_mcp", "config")
+    if parser_dir not in sys.path:
+        sys.path.insert(0, parser_dir)
+    try:
+        from flashcfg_parser import parse_project, FlashCfgParseError
+    except ImportError as ex:
+        print(f"[ameba] WARNING: SDK flashcfg_parser unavailable ({ex}); "
+              "extra_images skipped, falling back to default ameba.py flash.")
+        return None
+
+    # Set up the symlink only if (a) SDK build_dir doesn't already exist
+    # AND (b) our EXTERN_BUILD_DIR does. Skip otherwise to avoid stomping on
+    # a real SDK-tree build.
+    sdk_build_dir = join(SDK_DIR, f"build_{SOC}")
+    created_symlink = False
+    if not os.path.lexists(sdk_build_dir) and isdir(EXTERN_BUILD_DIR):
+        try:
+            os.symlink(EXTERN_BUILD_DIR, sdk_build_dir)
+            created_symlink = True
+        except OSError as ex:
+            print(f"[ameba] WARNING: cannot create temporary symlink "
+                  f"{sdk_build_dir} -> {EXTERN_BUILD_DIR} ({ex}); "
+                  "extra_images skipped.")
+            return None
+
+    try:
+        parsed = parse_project(SDK_DIR, SOC)
+    except (FlashCfgParseError, Exception) as ex:
+        print(f"[ameba] WARNING: layout parse failed ({ex}); "
+              "extra_images skipped, falling back to default ameba.py flash.")
+        return None
+    finally:
+        if created_symlink:
+            try:
+                os.unlink(sdk_build_dir)
+            except OSError:
+                pass
+
+    # SDK ResolvedImage.path points at <sdk_root>/build_<soc>/<file>, but our
+    # EXTERN_DIR mode puts artifacts at <PROJECT_DIR>/build_<soc>/<file>.
+    # Rewrite each path by basename so the symlinked path doesn't leak out.
+    images = []
+    for img in parsed.images:
+        rewritten_path = join(EXTERN_BUILD_DIR, os.path.basename(img.path))
+        images.append({
+            "path": rewritten_path,
+            "start_addr": int(img.start_addr, 16),
+            "end_addr": int(img.end_addr, 16),
+            "type": img.type,
+            "label": os.path.basename(img.path),
+        })
+    return images
+
+
+def _check_image_fits(images: list):
+    """Validate each image's file size <= declared (end_addr - start_addr + 1).
+
+    Aborts the build with env.Exit(1) on any over-region image. Optional
+    images (those that don't exist on disk) are skipped silently.
+    """
+    bad = []
+    for img in images:
+        if not isfile(img["path"]):
+            continue  # optional images (vfs, user partitions) may be absent
+        actual = os.path.getsize(img["path"])
+        region_size = img["end_addr"] - img["start_addr"] + 1
+        if actual > region_size:
+            bad.append((img, actual, region_size))
+
+    if bad:
+        sys.stderr.write("[ameba] ERROR: image(s) exceed their flash region:\n")
+        for img, actual, region_size in bad:
+            overage = actual - region_size
+            sys.stderr.write(
+                f"  {img['label']:<20} "
+                f"size={actual} bytes ({actual/1024:.1f} KB), "
+                f"region=0x{img['start_addr']:08X}-0x{img['end_addr']:08X} "
+                f"({region_size} bytes / {region_size/1024:.1f} KB), "
+                f"OVER by {overage} bytes ({overage/1024:.1f} KB)\n"
+            )
+        sys.stderr.write(
+            "[ameba] Reduce image size or expand the region in menuconfig "
+            "(`pio run -t menuconfig` -> Flash Layout).\n"
+        )
+        env.Exit(1)
+
+
 def upload_firmware(*_args, **_kwargs):
     import subprocess
 
@@ -750,7 +909,51 @@ def upload_firmware(*_args, **_kwargs):
     if chip_erase:
         upload_opts["chip-erase"] = True
 
-    print(f"[ameba] uploading SoC={SOC}, opts={upload_opts}")
+    # Extra images: user-defined custom regions to flash on top of the default
+    # boot/ota1/(ota2)/vfs1 layout. Format documented in _parse_extra_images.
+    extra_raw = env.GetProjectOption("board_upload.extra_images", "") or ""
+    extra_images = _parse_extra_images(extra_raw)
+
+    # Two flash modes:
+    #   (a) No extra_images -> default behavior. ameba.py flash live-parses
+    #       layout from .config and uses canonical bin filenames. Rock-solid,
+    #       handles every SoC family the SDK supports.
+    #   (b) extra_images present -> we must build the FULL partition table
+    #       (default 4 regions + user extras) and pass it via repeated
+    #       `-i name addr_start addr_end` flags. ameba.py flash treats `-i`
+    #       as REPLACE not APPEND, so omitting any default region would skip
+    #       it. We call SDK's parse_project() to get the canonical defaults.
+    if extra_images:
+        default_images = _resolve_default_layout()
+        if default_images is None:
+            # parse_project failed -- fall through to mode (a) but warn that
+            # extras won't be flashed. Better than silently breaking.
+            print("[ameba] WARNING: extra_images requested but layout parse "
+                  "failed; flashing default layout only (extras NOT flashed).")
+        else:
+            # Size-check user extras only -- defaults are vendor-managed and
+            # already pass via the standard build flow.
+            _check_image_fits(extra_images)
+
+            all_images = default_images + extra_images
+            print(f"[ameba] custom partition table ({len(all_images)} entries):")
+            for img in all_images:
+                tag = img.get("type", "USER")
+                size = (os.path.getsize(img["path"])
+                        if isfile(img["path"]) else "(missing)")
+                print(f"[ameba]   {tag:<14} {img['label']:<22} "
+                      f"@ 0x{img['start_addr']:08X}-0x{img['end_addr']:08X}  "
+                      f"size={size}")
+
+            # Translate to ameba.py flash's `-i name start end` (repeatable).
+            # We use 'image' so _ameba_py_args's option iteration handles it
+            # generically; pass as a list -> emitted multiple times.
+            upload_opts["image"] = [
+                [img["path"], hex(img["start_addr"]), hex(img["end_addr"])]
+                for img in all_images
+            ]
+
+    print(f"[ameba] uploading SoC={SOC}, opts={ {k: v for k, v in upload_opts.items() if k != 'image'} }")
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
         print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
         # Flash runs from PROJECT_DIR
