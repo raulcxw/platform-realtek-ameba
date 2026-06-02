@@ -491,17 +491,239 @@ def build_firmware(*_args, **_kwargs):
             print(f"[ameba] command failed (rc={rc})")
             env.Exit(rc)
 
-    # Copy firmware into PIO BUILD_DIR
-    src_app = join(EXTERN_BUILD_DIR, "app.bin")
-    dst_app = join(PROJECT_BUILD_DIR, "firmware.bin")
-    if isfile(src_app):
-        os.makedirs(PROJECT_BUILD_DIR, exist_ok=True)
-        shutil.copyfile(src_app, dst_app)
-        print(f"[ameba] copied {src_app} -> {dst_app}")
-    else:
-        print(f"[ameba] WARNING: app.bin not found at {src_app}")
+    # Copy firmware artifacts into PIO BUILD_DIR for the standard PIO flow.
+    #
+    # Naming policy (aligned with platform-espressif32 / ststm32 conventions):
+    #   firmware.elf      -> AP (Application Processor) ELF; the only ELF most
+    #                        users care about. Used by `pio debug`, GDB,
+    #                        `pio run -t size`. Mirrors ESP/STM32's single-ELF
+    #                        convention — debugger attaches to AP, period.
+    #   firmware.bin      -> SDK's app.bin (all cores packed; what `pio device`
+    #                        displays as the firmware blob)
+    #   firmware_ota.bin  -> SDK's ota_all.bin (full OTA payload incl. boot)
+    #   firmware_boot.bin -> SDK's boot.bin (bootloader)
+    #
+    # NP (Network Processor) cores: NOT exposed as separate ELFs. Their size
+    # IS counted in the Flash:/RAM: report below — Ameba's NP often hosts the
+    # Wi-Fi driver (~340 KB), too significant to silently exclude from totals.
+    # But the ELFs themselves stay inside build_<SOC>/build/project_<sdk>/...
+    # for advanced debugging; standard PIO flow doesn't need them in
+    # .pio/build/<env>/.
+    os.makedirs(PROJECT_BUILD_DIR, exist_ok=True)
+
+    # Read core layout from board manifest (build.cores). First entry is
+    # the AP, rest are NPs. See per-board JSON for the canonical declaration.
+    cores = board.get("build.cores", [])
+    if not cores:
+        sys.stderr.write(
+            f"Error: board '{board.id}' missing 'build.cores' array; "
+            "platform requires at least one core declaration.\n"
+        )
+        env.Exit(1)
+    ap_sdk_project = cores[0].get("sdk_project")
+    if not ap_sdk_project:
+        sys.stderr.write(
+            f"Error: board '{board.id}' build.cores[0].sdk_project missing.\n"
+        )
+        env.Exit(1)
+
+    ap_elf_src = join(
+        EXTERN_BUILD_DIR, "build", f"project_{ap_sdk_project}",
+        "image", "target_img2.axf",
+    )
+
+    artifacts = [
+        (ap_elf_src,                            "firmware.elf"),
+        (join(EXTERN_BUILD_DIR, "app.bin"),     "firmware.bin"),
+        (join(EXTERN_BUILD_DIR, "ota_all.bin"), "firmware_ota.bin"),
+        (join(EXTERN_BUILD_DIR, "boot.bin"),    "firmware_boot.bin"),
+    ]
+    for src, dst_name in artifacts:
+        dst = join(PROJECT_BUILD_DIR, dst_name)
+        if isfile(src):
+            shutil.copyfile(src, dst)
+            print(f"[ameba] copied {src} -> {dst}")
+        else:
+            # ELF and app.bin are required; OTA/boot are optional artifacts.
+            level = "WARNING" if dst_name in ("firmware.elf", "firmware.bin") else "info"
+            print(f"[ameba] {level}: {src} not found (skipped {dst_name})")
 
     _export_compile_commands()
+
+    # Standard PIO Flash:/RAM: progress bar — runs after artifacts are in place.
+    if _arm_size_tool:
+        _print_size_report(_arm_size_tool, board, cores)
+
+
+def _resolve_arm_size_tool():
+    """Find arm-none-eabi-size in the SDK-managed toolchain cache.
+
+    The SDK auto-fetches the toolchain into ${RTK_TOOLCHAIN_DIR}/asdk-<version>/
+    on first build. We glob for any `asdk-*/linux/newlib/bin/arm-none-eabi-size`.
+    Returns None if not yet fetched (size report will silently no-op until then).
+    """
+    import glob
+    cache_root = join(platform.get_dir(), ".cache", "rtk-toolchain")
+    candidates = sorted(glob.glob(
+        join(cache_root, "asdk-*", "linux", "newlib", "bin", "arm-none-eabi-size")
+    ))
+    return candidates[-1] if candidates else None
+
+
+# Resolved at script-evaluation time so build_firmware() can use it.
+_arm_size_tool = _resolve_arm_size_tool()
+
+
+# ISA-keyed regex tables for `arm-none-eabi-size -A` section parsing.
+#
+# Section names are stable across the Ameba SoC families per ld script audit
+# (amebadplus / amebagreen2 / amebalite / amebasmart hp+lp / RTL8720F all share
+# the .xip_image2.text / .sram_image2.text.data / .ram_image2.bss family).
+# RISC-V (kr4 in amebalite) adds .ram_image2.sbss for small BSS.
+# Cortex-A (ap in amebasmart, RTL8730E future) uses standard GCC layout
+# (.code/.data/.bss/.heap/.stack) on top of .xip_image2.text — different beast.
+_SIZE_REGEX_BY_ISA = {
+    "arm-cortex-m": {
+        "prog": (
+            r"^(?:\.xip_image2\.text|\.ARM\.exidx|\.ARM\.extab"
+            r"|\.psram_image2\.text\.data)\s+(\d+).*"
+        ),
+        "data": (
+            r"^(?:\.ram_image2\.entry|\.sram_image2\.text\.data"
+            r"|\.sram_timer_idle_task_stack\.bss|\.ram_image2\.bss"
+            r"|\.ram_image2\.nocache\.data|\.sram_rtos_static_[0-9]+\.bss"
+            r"|\.psram_image2\.bss)\s+(\d+).*"
+        ),
+    },
+    "riscv": {
+        # RISC-V kr4: identical to ARM-M plus .ram_image2.sbss (small BSS).
+        "prog": (
+            r"^(?:\.xip_image2\.text|\.ARM\.exidx|\.ARM\.extab"
+            r"|\.psram_image2\.text\.data)\s+(\d+).*"
+        ),
+        "data": (
+            r"^(?:\.ram_image2\.entry|\.sram_image2\.text\.data"
+            r"|\.sram_timer_idle_task_stack\.bss|\.ram_image2\.bss"
+            r"|\.ram_image2\.sbss|\.ram_image2\.nocache\.data"
+            r"|\.sram_rtos_static_[0-9]+\.bss|\.psram_image2\.bss)\s+(\d+).*"
+        ),
+    },
+    "arm-cortex-a": {
+        # Cortex-A (e.g. CA32 in amebasmart `ap` core, RTL8730E future):
+        # standard GCC sections layered on top of .xip_image2.text.
+        # .heap/.stack are reserved (allocated, not yet used) -- exclude
+        # from RAM total to match user expectation of "what code consumes".
+        # .mmu_tbl / .xlat_table are page tables (small but flash-resident).
+        "prog": (
+            r"^(?:\.xip_image2\.text|\.code|\.text|\.rodata"
+            r"|\.ARM\.exidx|\.ARM\.extab|\.ctors|\.dtors"
+            r"|\.preinit_array|\.init_array|\.fini_array"
+            r"|\.mmu_tbl|\.xlat_table|\.bluetooth_trace\.text)\s+(\d+).*"
+        ),
+        "data": (
+            r"^(?:\.data|\.bss|\.psram_heap\.start)\s+(\d+).*"
+        ),
+    },
+}
+
+
+def _print_size_report(size_tool: str, board_obj, cores: list):
+    """Reproduce PIO's CheckUploadSize logic locally, multi-core aware.
+
+    `cores` is the board manifest's build.cores list; first entry is AP,
+    rest are NPs. We feed every core's image2 ELF to `arm-none-eabi-size -A`
+    so the Flash:/RAM: totals reflect the full device occupation (NP runs
+    Wi-Fi driver, sometimes ~340 KB — too significant to silently drop).
+
+    Per-core regex selection is keyed on `cores[*].isa`:
+      arm-cortex-m / riscv / arm-cortex-a (see _SIZE_REGEX_BY_ISA).
+    """
+    import re as _re
+    import subprocess as _sp
+
+    prog_max = int(board_obj.get("upload.maximum_size", 0))
+    data_max = int(board_obj.get("upload.maximum_ram_size", 0))
+    if prog_max == 0:
+        return
+
+    # Resolve every core's actual SDK build ELF (not the .pio/build copy --
+    # NPs aren't copied there). Skip cores whose ELF doesn't exist yet.
+    core_elfs = []  # list of (sdk_project, isa, elf_path)
+    for core in cores:
+        sdk_project = core.get("sdk_project")
+        isa = core.get("isa", "arm-cortex-m")
+        if not sdk_project:
+            continue
+        elf = join(EXTERN_BUILD_DIR, "build", f"project_{sdk_project}",
+                   "image", "target_img2.axf")
+        if isfile(elf):
+            core_elfs.append((sdk_project, isa, elf))
+    if not core_elfs:
+        return
+
+    # Run `size -A -d` once per ISA (sections regex differs). Most boards
+    # are single-ISA so this is one subprocess; the kr4+km4 amebalite case
+    # needs two (RISC-V + ARM); a hypothetical mixed CA32+M-core SoC needs
+    # three. All cheap.
+    prog_size = 0
+    data_size = 0
+    for isa, regex_set in _SIZE_REGEX_BY_ISA.items():
+        elfs_for_isa = [e for (_, i, e) in core_elfs if i == isa]
+        if not elfs_for_isa:
+            continue
+        try:
+            res = _sp.run(
+                [size_tool, "-A", "-d", *elfs_for_isa],
+                capture_output=True, text=True, check=True,
+            )
+        except (_sp.CalledProcessError, FileNotFoundError) as ex:
+            print(f"[ameba] size report skipped for isa={isa}: {ex}")
+            continue
+
+        prog_re = _re.compile(regex_set["prog"])
+        data_re = _re.compile(regex_set["data"])
+        for line in res.stdout.split("\n"):
+            line = line.strip()
+            mp = prog_re.search(line)
+            if mp:
+                prog_size += sum(int(v) for v in mp.groups())
+                continue
+            md = data_re.search(line)
+            if md:
+                data_size += sum(int(v) for v in md.groups())
+
+    # Warn (not fail) if the manifest declares an ISA we don't have a regex
+    # for — we'd silently undercount otherwise.
+    unknown_isas = {i for (_, i, _) in core_elfs} - set(_SIZE_REGEX_BY_ISA)
+    if unknown_isas:
+        print(f"[ameba] WARNING: no size regex for isa={sorted(unknown_isas)}; "
+              "report may undercount. Add to _SIZE_REGEX_BY_ISA in builder/main.py.")
+
+    def _bar(value, total):
+        pct = float(value) / float(total) if total else 0.0
+        blocks = min(int(round(10 * pct)), 10)
+        return "[{:{}}] {: 6.1%} (used {:d} bytes from {:d} bytes)".format(
+            "=" * blocks, 10, pct, value, total,
+        )
+
+    print('Advanced Memory Usage is available via '
+          '"PlatformIO Home > Project Inspect"')
+    if data_max:
+        print(f"RAM:   {_bar(data_size, data_max)}")
+    print(f"Flash: {_bar(prog_size, prog_max)}")
+    # Show per-core breakdown (helpful when users wonder where their bytes went)
+    core_names = ", ".join(f"{p}({i})" for p, i, _ in core_elfs)
+    print(f"       (cores counted: {core_names})")
+
+    if data_max and data_size > data_max:
+        sys.stderr.write(
+            f"Warning! data size ({data_size}) > max ({data_max})\n"
+        )
+    if prog_size > prog_max:
+        sys.stderr.write(
+            f"Error: program size ({prog_size}) > max ({prog_max})\n"
+        )
+        env.Exit(1)
 
 
 def upload_firmware(*_args, **_kwargs):
@@ -627,7 +849,70 @@ env.AddCustomTarget(
 # `pio run` default
 Default(target_firmware)
 
+# -----------------------------------------------------------------------------
+# Wire up the standard PIO `pio run -t size` target.
+#
+# The post-build `Flash:`/`RAM:` progress bar is emitted from inside
+# build_firmware() via `_print_size_report()` -- we cannot reuse PIO's own
+# CheckUploadSize because it requires `target` to be an env.Program() output.
+# But we still expose `pio run -t size` as a standalone target so users can
+# rerun the size summary without rebuilding.
+#
+# Section taxonomy (verified empirically on RTL8721Dx, asdk-10.3.1 toolchain):
+#   FLASH (XIP from external flash):
+#     .xip_image2.text                  -- main code (MAJORITY, esp KM0 = Wi-Fi driver)
+#     .ARM.exidx / .ARM.extab           -- C++ unwind tables (small but counted)
+#     .psram_image2.text.data           -- when PSRAM is enabled (currently 0 B)
+#   RAM (SRAM/PSRAM resident):
+#     .ram_image2.entry                 -- vectors / entry stub
+#     .sram_image2.text.data            -- SRAM-resident code+data
+#     .ram_image2.bss                   -- BSS in SRAM
+#     .ram_image2.nocache.data          -- non-cached SRAM data (rare)
+#     .sram_timer_idle_task_stack.bss   -- FreeRTOS idle stack
+#     .sram_rtos_static_*.bss           -- FreeRTOS static control blocks
+#     .psram_image2.bss                 -- BSS in PSRAM (when enabled)
+#
+# .debug_*, .comment, .stab*, .ARM.attributes, .coex_trace.text -- excluded
+# (debug info / metadata, not flashed to the device).
+if _arm_size_tool:
+    # Resolve all cores' SDK ELFs for the standalone `pio run -t size` target.
+    # Same data source as build_firmware()'s _print_size_report — board's
+    # build.cores array. SDK ELFs (not the AP-only firmware.elf in PIO
+    # BUILD_DIR) are passed so `size -B -d` reports per-core line items.
+    _all_core_elfs = [
+        join(EXTERN_BUILD_DIR, "build", f"project_{c['sdk_project']}",
+             "image", "target_img2.axf")
+        for c in board.get("build.cores", [])
+        if c.get("sdk_project")
+    ]
+    _size_cmd_args = " ".join(f'"{e}"' for e in _all_core_elfs)
+    env.Replace(
+        SIZETOOL=_arm_size_tool,
+        SIZEPRINTCMD=f'"$SIZETOOL" -B -d {_size_cmd_args}',
+    )
+    env.AddCustomTarget(
+        name="size",
+        dependencies=None,
+        actions=env.VerboseAction("$SIZEPRINTCMD", "Calculating size"),
+        title="Program Size",
+        description="Print firmware size summary (all cores' image2 ELFs)",
+    )
+
+    # Register `checkprogsize` as an alias of target_firmware. PIO's core
+    # builder/main.py auto-injects `Default("checkprogsize")` whenever
+    # SIZETOOL is set (~/.platformio/penv/.../platformio/builder/main.py
+    # ~line 185-193). Without this alias, that Default() call fails with
+    #   *** Do not know how to make File target `checkprogsize'. Stop.
+    # which makes SCons exit non-zero AFTER our build_firmware succeeded
+    # — so the user sees the size report print correctly, then [FAILED].
+    #
+    # The actual size report is already emitted inside build_firmware()
+    # via _print_size_report(). This alias just teaches SCons what
+    # `checkprogsize` resolves to (= the firmware build itself), keeping
+    # the standard PIO target graph satisfied.
+    AlwaysBuild(env.Alias("checkprogsize", target_firmware))
+
 env.Replace(
     PROGNAME="firmware",
-    PROGSUFFIX=".bin",
+    PROGSUFFIX=".elf",
 )

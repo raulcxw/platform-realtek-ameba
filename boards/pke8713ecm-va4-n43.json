@@ -5,7 +5,11 @@
     "extra_flags": "-DRTL8713E",
     "f_cpu": "400000000L",
     "mcu": "RTL8713E",
-    "soc": "RTL8713E"
+    "soc": "RTL8713E",
+    "cores": [
+      {"sdk_project": "km4", "isa": "arm-cortex-m"},
+      {"sdk_project": "kr4", "isa": "riscv"}
+    ]
   },
   "connectivity": [
     "wifi",
