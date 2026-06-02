@@ -711,9 +711,6 @@ def _print_size_report(size_tool: str, board_obj, cores: list):
     if data_max:
         print(f"RAM:   {_bar(data_size, data_max)}")
     print(f"Flash: {_bar(prog_size, prog_max)}")
-    # Show per-core breakdown (helpful when users wonder where their bytes went)
-    core_names = ", ".join(f"{p}({i})" for p, i, _ in core_elfs)
-    print(f"       (cores counted: {core_names})")
 
     if data_max and data_size > data_max:
         sys.stderr.write(
