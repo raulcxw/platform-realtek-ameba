@@ -69,11 +69,19 @@ PYEOF
 
 echo
 echo "=== lint: optional ruff (skip if not installed) ==="
+# Try system PATH first, then SDK venv (where dev installs land), then skip.
+RUFF=""
 if command -v ruff >/dev/null 2>&1; then
+    RUFF=$(command -v ruff)
+elif [ -x ~/.platformio/packages/framework-ameba-rtos/.venv/bin/ruff ]; then
+    RUFF=~/.platformio/packages/framework-ameba-rtos/.venv/bin/ruff
+fi
+
+if [ -n "$RUFF" ]; then
     # E, F: pycodestyle errors + pyflakes (unused imports, undefined names)
     # ignore E501 line-too-long (we have long error messages by design)
-    ruff check --select E,F --ignore E501 platform.py builder/
-    echo "  ✓ ruff passed"
+    "$RUFF" check --select E,F --ignore E501 platform.py builder/
+    echo "  ✓ ruff passed ($RUFF)"
 else
     echo "  - ruff not installed; skip"
 fi

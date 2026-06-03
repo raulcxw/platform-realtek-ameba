@@ -632,17 +632,27 @@ def _inject_check_metadata():
         tok = tokens[i]
         # -I<path>  OR  -I <path>
         if tok == "-I" and i + 1 < len(tokens):
-            includes.append(tokens[i + 1]); i += 2; continue
+            includes.append(tokens[i + 1])
+            i += 2
+            continue
         if tok.startswith("-I"):
-            includes.append(tok[2:]); i += 1; continue
+            includes.append(tok[2:])
+            i += 1
+            continue
         # -isystem <path>  (treat as include too)
         if tok == "-isystem" and i + 1 < len(tokens):
-            includes.append(tokens[i + 1]); i += 2; continue
+            includes.append(tokens[i + 1])
+            i += 2
+            continue
         # -D<macro>  OR  -D <macro>
         if tok == "-D" and i + 1 < len(tokens):
-            defines.append(tokens[i + 1]); i += 2; continue
+            defines.append(tokens[i + 1])
+            i += 2
+            continue
         if tok.startswith("-D"):
-            defines.append(tok[2:]); i += 1; continue
+            defines.append(tok[2:])
+            i += 1
+            continue
         i += 1
 
     # Dedupe while preserving order (insertion-ordered dict).
@@ -1082,7 +1092,6 @@ def _check_image_fits(images: list):
 
 
 def upload_firmware(*_args, **_kwargs):
-    import subprocess
 
     sdk_env = _make_sdk_env()
     upload_opts = {}
@@ -1181,7 +1190,6 @@ def erase_flash(*_args, **_kwargs):
     Honors the same port/baud/memory_type/remote-server settings as
     upload_firmware().
     """
-    import subprocess
 
     sdk_env = _make_sdk_env()
     upload_opts = {"chip-erase": True}
@@ -1274,7 +1282,7 @@ def build_fs_image(*_args, **_kwargs):
 
     file_count = sum(len(files) for _, _, files in os.walk(data_dir))
     if file_count == 0:
-        print(f"[ameba] WARNING: data/ is empty; will produce an empty "
+        print("[ameba] WARNING: data/ is empty; will produce an empty "
               "LittleFS image (just metadata).")
 
     # 3. Resolve VFS1 partition geometry
@@ -1350,7 +1358,6 @@ def upload_fs_image(*_args, **_kwargs):
     the default partition table (unlike upload_firmware which uses
     extra_images for additive flashing).
     """
-    import subprocess
 
     fs_bin = join(PROJECT_BUILD_DIR, "firmware_fs.bin")
     if not isfile(fs_bin):

@@ -518,7 +518,7 @@ class RealtekamebaPlatform(PlatformBase):
                     "executable": "bin/openocd",
                     "arguments": [
                         "-f",
-                        f"interface/cmsis-dap.cfg",
+                        "interface/cmsis-dap.cfg",
                         "-f",
                         f"target/{board.get('build.soc', '').lower()}.cfg",
                     ],
