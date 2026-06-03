@@ -481,6 +481,55 @@ def _ameba_py_args(action, soc=SOC, clean=False, upload_opts=None,
     else:
         raise ValueError(f"unknown action {action!r}")
 
+
+def _run_ameba_flash(cmd, sdk_env, label):
+    """Run an `ameba.py flash` subprocess with proper failure detection.
+
+    The SDK's flash.py main() returns exit code 0 even when its internal
+    flash thread reports `Finished FAIL: ErrType.XXX` via stdout (the
+    failure never propagates to sys.exit). To catch this we capture
+    stdout and grep for the failure markers. False negatives here = silent
+    failures the user only finds out when their next monitor session shows
+    nothing was actually flashed.
+
+    Returns nothing on success; calls env.Exit() on failure.
+    """
+    import subprocess
+
+    print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+    result = subprocess.run(
+        cmd, cwd=PROJECT_DIR, env=sdk_env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True,
+    )
+    sys.stdout.write(result.stdout)
+    sys.stdout.flush()
+
+    if result.returncode != 0:
+        env.Exit(result.returncode)
+        return
+
+    if "Finished FAIL" in result.stdout or "Finished PASS" not in result.stdout:
+        print(
+            f"\n[ameba] ERROR: {label} did NOT complete.\n"
+            "  Common causes:\n"
+            "    1. Board not in download mode. Try this sequence:\n"
+            "         a) start the pio command\n"
+            "         b) when you see 'Check supported flash size...',\n"
+            "            press the board's RESET button\n"
+            "       Auto-reset via DTR/RTS only works on USB-UART chips\n"
+            "       that wire those pins to the board's reset (CP2102, CH340).\n"
+            "       PL2303 typically does NOT, so manual reset is needed.\n"
+            "    2. Serial port held by another process — make sure no\n"
+            "       `pio device monitor` is running on this port.\n"
+            "    3. Image larger than its target flash region — check the\n"
+            "       'too large for ...' line above and either shrink the\n"
+            "       image or grow the partition via menuconfig."
+        )
+        env.Exit(1)
+        return
+
+
 # -----------------------------------------------------------------------------
 # compile_commands.json export (VSCode IntelliSense)
 # -----------------------------------------------------------------------------
@@ -1098,18 +1147,22 @@ def upload_firmware(*_args, **_kwargs):
             # Translate to ameba.py flash's `-i name start end` (repeatable).
             # We use 'image' so _ameba_py_args's option iteration handles it
             # generically; pass as a list -> emitted multiple times.
+            #
+            # Important: ameba.py's AmebaFlash.py download_handler treats
+            # `end` as EXCLUSIVE (region size = end - start, see
+            # tools/ameba/Flash/base/download_handler.py:837). But
+            # flashcfg_parser gives us end_addr INCLUSIVE (0x08722FFF is
+            # the last byte of VFS1, not one-past-end). So we add 1 here
+            # to convert inclusive->exclusive, otherwise a perfectly-sized
+            # image fails with "image too large for region".
             upload_opts["image"] = [
-                [img["path"], hex(img["start_addr"]), hex(img["end_addr"])]
+                [img["path"], hex(img["start_addr"]), hex(img["end_addr"] + 1)]
                 for img in all_images
             ]
 
     print(f"[ameba] uploading SoC={SOC}, opts={ {k: v for k, v in upload_opts.items() if k != 'image'} }")
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
-        print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
-        # Flash runs from PROJECT_DIR
-        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
-        if rc != 0:
-            env.Exit(rc)
+        _run_ameba_flash(cmd, sdk_env, label="upload")
 
 
 def erase_flash(*_args, **_kwargs):
@@ -1153,41 +1206,7 @@ def erase_flash(*_args, **_kwargs):
     print(f"[ameba] CHIP ERASE + RE-FLASH SoC={SOC} "
           "(full flash wipe followed by reflash of current project images)")
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
-        print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
-        # ameba.py flash exits with rc=0 even when its internal flash thread
-        # reports "Finished FAIL: ErrType.XXX" (the Python main() function
-        # never propagates the thread's failure to sys.exit). To catch this
-        # we capture stdout and grep for the failure marker. False negatives
-        # here = silent failures the user only finds out when their next
-        # `pio device monitor` shows the firmware is unchanged.
-        result = subprocess.run(
-            cmd, cwd=PROJECT_DIR, env=sdk_env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True,
-        )
-        sys.stdout.write(result.stdout)
-        sys.stdout.flush()
-        if result.returncode != 0:
-            env.Exit(result.returncode)
-            return
-        if "Finished FAIL" in result.stdout or "Finished PASS" not in result.stdout:
-            print(
-                "\n[ameba] ERROR: erase did NOT complete.\n"
-                "  Common causes:\n"
-                "    1. Board not in download mode. Try this sequence:\n"
-                "         a) start `pio run -t erase`\n"
-                "         b) when you see 'Check supported flash size...',\n"
-                "            press the board's RESET button\n"
-                "       Auto-reset via DTR/RTS only works on USB-UART chips\n"
-                "       that wire those pins to the board's reset (CP2102,\n"
-                "       CH340). PL2303 typically does NOT, so manual reset\n"
-                "       is needed.\n"
-                "    2. Serial port held by another process — make sure no\n"
-                "       `pio device monitor` is running on this port.\n"
-                "    3. eFuse read failure — try a hardware reset and retry."
-            )
-            env.Exit(1)
-            return
+        _run_ameba_flash(cmd, sdk_env, label="erase + reflash")
 
 
 def _resolve_vfs_region():
@@ -1357,11 +1376,13 @@ def upload_fs_image(*_args, **_kwargs):
         return
 
     sdk_env = _make_sdk_env()
+    # ameba.py flash -i expects EXCLUSIVE end; flashcfg_parser gives us
+    # INCLUSIVE end. Convert with +1 (see download_handler.py:837 in SDK).
     upload_opts = {
         "image": [[
             fs_bin,
             hex(region["start_addr"]),
-            hex(region["end_addr"]),
+            hex(region["end_addr"] + 1),
         ]],
     }
 
@@ -1385,11 +1406,7 @@ def upload_fs_image(*_args, **_kwargs):
           f"-> 0x{region['start_addr']:08X}-0x{region['end_addr']:08X} "
           f"({fs_size}/{region['size']} bytes used)")
     for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
-        print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
-        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
-        if rc != 0:
-            env.Exit(rc)
-            return
+        _run_ameba_flash(cmd, sdk_env, label="uploadfs")
 
 
 def run_menuconfig(*_args, **_kwargs):
