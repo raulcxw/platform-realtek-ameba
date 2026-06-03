@@ -35,10 +35,16 @@ echo "  PROJ          = $PROJ"
 # Reinstall platform from local checkout to validate the install path.
 # Using `file://` lets us test the install logic without depending on a
 # network round-trip to GitHub.
+#
+# The `-g` flag is critical: pio pkg uninstall/install without -g operates
+# on the current project's packages and requires platformio.ini in cwd.
+# Repo root has no platformio.ini → NotPlatformIOProjectError. With -g we
+# install to ~/.platformio/platforms/ globally, which is where the test
+# project below will resolve `platform = realtek-ameba` from.
 echo
 echo "=== T01 step 1: pio platform install (from local checkout) ==="
-pio pkg uninstall -p realtek-ameba 2>&1 | tail -3 || true
-pio pkg install -p "file://$PLATFORM_PATH" 2>&1 | tail -10
+pio pkg uninstall -g -p realtek-ameba 2>&1 | tail -3 || true
+pio pkg install -g -p "file://$PLATFORM_PATH" 2>&1 | tail -10
 
 if [ ! -d ~/.platformio/platforms/realtek-ameba ]; then
     echo "❌ T01: ~/.platformio/platforms/realtek-ameba not created"
