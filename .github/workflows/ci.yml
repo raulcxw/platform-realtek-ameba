@@ -59,15 +59,81 @@ jobs:
           python -m pytest unit/ -v
 
   # =========================================================================
-  # Layer 2b: integration tests (~5 min warm, ~10 min cold per board)
+  # Prefetch SDK + toolchain ONCE so the integration matrix below reuses the
+  # same cache across all 3 boards. Without this, each matrix job would
+  # cold-clone the 1.5GB SDK + per-SoC toolchain independently.
   #
-  # Runs each test against all 3 boards in parallel via matrix.
-  # SDK + toolchain cached across runs (key = hash of platform.json + platform.py).
+  # On a real cold run this still takes ~10 min, but only ONCE per
+  # platform.json/platform.py change. Subsequent matrix jobs hit the cache
+  # in seconds.
+  # =========================================================================
+  prefetch:
+    name: Prefetch SDK + toolchain
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO Core
+        run: pip install --quiet --upgrade platformio
+
+      - name: Cache SDK + toolchain
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages/framework-ameba-rtos
+            ~/rtk-toolchain
+          key: ameba-sdk-toolchain-${{ hashFiles('platform.json', 'platform.py') }}
+          restore-keys: |
+            ameba-sdk-toolchain-
+
+      - name: Install platform globally
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: pio pkg install -g -p "file://$GITHUB_WORKSPACE"
+
+      # Cold-cache populate: trigger a probe build for each board so all
+      # required toolchains land in ~/rtk-toolchain. Each board uses a
+      # different toolchain family (amebadplus/amebagreen2/amebalite),
+      # so we must touch all 3 to populate fully.
+      - name: Populate cache (cold only)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          for board in pke8721daf-c13-f10 pke8710ecf-c53-f20 pke8713ecm-va4-n43; do
+            echo "=== Probe build for $board (toolchain prefetch) ==="
+            PROJ=$(mktemp -d -t prefetch-$board-XXXXXX)
+            mkdir -p "$PROJ/src"
+            cat > "$PROJ/platformio.ini" <<EOF
+          [env:$board]
+          platform = realtek-ameba
+          framework = ameba-rtos
+          board = $board
+          EOF
+            (cd "$PROJ" && pio run -e "$board" 2>&1 | tail -20) || \
+              echo "WARN: probe build for $board hit issues (cache may be partial)"
+          done
+
+      - name: Show cache size
+        run: |
+          du -sh ~/.platformio/packages/framework-ameba-rtos 2>/dev/null || true
+          du -sh ~/rtk-toolchain 2>/dev/null || true
+
+  # =========================================================================
+  # Layer 2b: integration tests (~30s warm per board, runs in parallel)
+  #
+  # Depends on prefetch — the cache is guaranteed populated by the time
+  # we get here, so each matrix job reuses the same SDK + toolchain.
   # =========================================================================
   integration:
     name: Integration (${{ matrix.board }} / ${{ matrix.test }})
     runs-on: ubuntu-latest
-    needs: unit
+    needs: prefetch
     strategy:
       fail-fast: false
       matrix:
@@ -91,18 +157,17 @@ jobs:
           pip install --quiet --upgrade platformio
           pio --version
 
-      # SDK + toolchain cache. Cold first run takes ~10 min, after that
-      # any push that doesn't change platform.json/platform.py reuses cached
-      # SDK + toolchain → ~30s total per board.
-      - name: Cache SDK + toolchain
+      # Restore the cache populated by the prefetch job. Same key —
+      # since prefetch ran first and populated, this should always hit.
+      - name: Restore SDK + toolchain cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.platformio/packages/framework-ameba-rtos
             ~/rtk-toolchain
-          key: ameba-sdk-${{ hashFiles('platform.json', 'platform.py') }}
+          key: ameba-sdk-toolchain-${{ hashFiles('platform.json', 'platform.py') }}
           restore-keys: |
-            ameba-sdk-
+            ameba-sdk-toolchain-
 
       - name: Run integration test ${{ matrix.test }}
         env:
