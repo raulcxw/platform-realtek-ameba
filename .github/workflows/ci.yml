@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit is pushed to the same PR/branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =========================================================================
+  # Layer 1: lint (~10s, fast feedback)
+  # =========================================================================
+  lint:
+    name: Lint (Python + JSON + board manifests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install --quiet ruff
+
+      - name: Run lint
+        run: ./tests/lint.sh
+
+  # =========================================================================
+  # Layer 2a: Python unit tests (~1 min, mock-based, no SDK needed)
+  # =========================================================================
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pytest
+        run: pip install --quiet pytest pytest-mock
+
+      - name: Run unit tests
+        # cd into tests/ to dodge the platform.py-vs-stdlib-platform name
+        # collision. (Importing pytest pulls in stdlib `platform`, which
+        # python's resolution finds our platform.py first if cwd is repo root.)
+        run: |
+          cd tests
+          python -m pytest unit/ -v
+
+  # =========================================================================
+  # Layer 2b: integration tests (~5 min warm, ~10 min cold per board)
+  #
+  # Runs each test against all 3 boards in parallel via matrix.
+  # SDK + toolchain cached across runs (key = hash of platform.json + platform.py).
+  # =========================================================================
+  integration:
+    name: Integration (${{ matrix.board }} / ${{ matrix.test }})
+    runs-on: ubuntu-latest
+    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        board:
+          - pke8721daf-c13-f10
+          - pke8710ecf-c53-f20
+          - pke8713ecm-va4-n43
+        test:
+          - 01_install
+        # As Phase A graduates we add: 02_first_build, 04_clean, 05_buildfs, ...
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO Core
+        run: |
+          pip install --quiet --upgrade platformio
+          pio --version
+
+      # SDK + toolchain cache. Cold first run takes ~10 min, after that
+      # any push that doesn't change platform.json/platform.py reuses cached
+      # SDK + toolchain → ~30s total per board.
+      - name: Cache SDK + toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages/framework-ameba-rtos
+            ~/rtk-toolchain
+          key: ameba-sdk-${{ hashFiles('platform.json', 'platform.py') }}
+          restore-keys: |
+            ameba-sdk-
+
+      - name: Run integration test ${{ matrix.test }}
+        env:
+          TEST_BOARD: ${{ matrix.board }}
+          PLATFORM_PATH: ${{ github.workspace }}
+        run: ./tests/integration/${{ matrix.test }}.sh
+
+      # Surface the install log on failure for debugging
+      - name: Dump install log on failure
+        if: failure()
+        run: |
+          if [ -d /tmp/pio-install-* ]; then
+            for d in /tmp/pio-install-*; do
+              if [ -f "$d/install.log" ]; then
+                echo "=== $d/install.log (last 60 lines) ==="
+                tail -60 "$d/install.log"
+              fi
+            done
+          fi

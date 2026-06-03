@@ -32,3 +32,9 @@ examples/*/app_example/_pio_src_fragment.cmake
 # Internal-only docs (not shipped in release)
 ARCH.md
 PROGRESS.md
+.hermes/
+
+# Test artifacts
+tests/.pytest_cache/
+tests/**/__pycache__/
+.test-venv/

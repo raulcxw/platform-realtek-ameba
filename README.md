@@ -102,3 +102,9 @@ boards/<board>.json        Per-board manifests (mcu series, debug, upload defaul
 ## License
 
 Apache-2.0 (matches the upstream PlatformIO ecosystem).
+
+## Testing
+
+Regression tests live in `tests/` (lint + unit + integration + hardware
+smoke). See [`tests/README.md`](tests/README.md) for how to run locally;
+GitHub Actions runs lint + unit + integration on every push.
