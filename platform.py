@@ -51,6 +51,23 @@ class RealtekamebaPlatform(PlatformBase):
     """
 
     def configure_default_packages(self, variables, targets):
+        # Hook into PIO's standard `pio run -t clean` BEFORE the SDK venv
+        # work below. PIO's CleanProject only wipes $BUILD_DIR (.pio/build/
+        # <env>/), but our SDK runs in EXTERN_DIR mode and produces all
+        # real artifacts in <PROJECT_DIR>/build_<SOC>/. Without this hook
+        # `pio run -t clean` looks like it succeeded but the next
+        # `pio run` is still incremental — exactly what the user
+        # ran clean to avoid.
+        #
+        # We mirror the user-visible behavior of every other PIO platform:
+        # one `pio run -t clean` wipes everything build-related.
+        # ameba-clean stays around as a superset (also clears
+        # compile_commands.json and soc_info.json).
+        if "clean" in (targets or []):
+            self._clean_extern_build_dir(variables)
+            # Don't return — let PIO continue to its own CleanProject which
+            # then wipes .pio/build/<env>/ and exits.
+
         # Ensure framework-ameba-rtos is present BEFORE PIO's package
         # manager kicks in. If this is the first build (or user wiped
         # ~/.platformio), we clone the SDK ourselves with
@@ -104,6 +121,76 @@ class RealtekamebaPlatform(PlatformBase):
             if c and os.path.isfile(os.path.join(c, "ameba.py")):
                 return c
         return None
+
+    def _clean_extern_build_dir(self, variables):
+        """Wipe SDK build artifacts on `pio run -t clean`.
+
+        PIO core's CleanProject only removes $BUILD_DIR (.pio/build/<env>/).
+        Our EXTERN_DIR build mode produces additional artifacts under
+        PROJECT_DIR that PIO doesn't know about — clean them here so a
+        single `pio run -t clean` actually returns the project to a
+        pristine state:
+
+          - <PROJECT_DIR>/build_<SOC>/         (real SDK build tree, ~350 MB)
+          - <PROJECT_DIR>/compile_commands.json (mirror copy for IDEs)
+          - <PROJECT_DIR>/soc_info.json         (SDK per-project SoC cache)
+          - <PROJECT_DIR>/app_example/_pio_src_fragment.cmake
+                                                (auto-generated src/ bridge)
+
+        If we can't resolve the SoC (no board set), warn and fall through.
+        """
+        board_id = variables.get("board")
+        if not board_id:
+            sys.stderr.write(
+                "[realtek-ameba] WARN: clean target without 'board' set; "
+                "<PROJECT_DIR>/build_<SOC>/ left untouched.\n"
+            )
+            return
+
+        try:
+            board_config = self.board_config(board_id)
+            soc = board_config.get("build.soc")
+        except Exception as exc:
+            sys.stderr.write(
+                f"[realtek-ameba] WARN: clean couldn't resolve SoC for "
+                f"board={board_id!r} ({exc}); <PROJECT_DIR>/build_<SOC>/ "
+                f"left untouched.\n"
+            )
+            return
+
+        if not soc:
+            sys.stderr.write(
+                f"[realtek-ameba] WARN: board {board_id!r} has no build.soc; "
+                "<PROJECT_DIR>/build_<SOC>/ left untouched.\n"
+            )
+            return
+
+        # PROJECT_DIR is the cwd when PIO runs `pio run` — same convention
+        # builder/main.py uses (env.subst("$PROJECT_DIR")).
+        project_dir = os.getcwd()
+        extern_build_dir = os.path.join(project_dir, f"build_{soc}")
+        if os.path.isdir(extern_build_dir):
+            sys.stderr.write(
+                f"[realtek-ameba] cleaning {extern_build_dir}\n"
+            )
+            shutil.rmtree(extern_build_dir, ignore_errors=True)
+
+        # Stale auxiliary files that survive a naive PIO clean. They're
+        # tiny (KB) but cause "stale data" debugging confusion if left:
+        #   - compile_commands.json: IDE picks up old SDK paths after refactor
+        #   - soc_info.json: SDK reads stale SoC name → "Invalid SOC" warnings
+        #   - _pio_src_fragment.cmake: lists old src/ files after rename
+        for stale in [
+            os.path.join(project_dir, "compile_commands.json"),
+            os.path.join(project_dir, "soc_info.json"),
+            os.path.join(project_dir, "app_example", "_pio_src_fragment.cmake"),
+        ]:
+            if os.path.isfile(stale):
+                sys.stderr.write(f"[realtek-ameba] removing {stale}\n")
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
 
     def _ensure_ameba_rtos_package(self):
         """Clone ameba-rtos into the PIO package cache if not already there.

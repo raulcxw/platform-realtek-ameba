@@ -1426,40 +1426,6 @@ def run_menuconfig(*_args, **_kwargs):
             env.Exit(rc)
 
 
-def clean_all(*_args, **_kwargs):
-    """Clean everything: build_<SOC>/ in PROJECT_DIR, .pio/, and exported files."""
-    sdk_env = _make_sdk_env()
-    print(f"[ameba] cleaning SoC={SOC} ({EXTERN_BUILD_DIR} + PIO BUILD_DIR)")
-
-    # 1. Remove the EXTERN_DIR build tree directly. Faster + more reliable
-    #    than `ameba.py clean` which only does cmake-level cleanup.
-    if isdir(EXTERN_BUILD_DIR):
-        print(f"[ameba] rm -rf {EXTERN_BUILD_DIR}")
-        shutil.rmtree(EXTERN_BUILD_DIR, ignore_errors=True)
-
-    # 2. clean PIO side
-    if isdir(PROJECT_BUILD_DIR):
-        print(f"[ameba] rm -rf {PROJECT_BUILD_DIR}")
-        shutil.rmtree(PROJECT_BUILD_DIR, ignore_errors=True)
-
-    # 3. clean exported compile_commands.json from project root
-    cc = join(PROJECT_DIR, "compile_commands.json")
-    if isfile(cc):
-        print(f"[ameba] rm {cc}")
-        os.remove(cc)
-
-    # 4. clean the auto-generated _pio_src_fragment.cmake
-    fragment = join(PROJECT_DIR, "app_example", "_pio_src_fragment.cmake")
-    if isfile(fragment):
-        print(f"[ameba] rm {fragment}")
-        os.remove(fragment)
-
-    # 5. clean soc_info.json (SDK's per-project SoC cache; stale entries
-    #    can cause "Invalid SOC name" warnings on rebuild).
-    soc_info = join(PROJECT_DIR, "soc_info.json")
-    if isfile(soc_info):
-        print(f"[ameba] rm {soc_info}")
-        os.remove(soc_info)
 
 
 # -----------------------------------------------------------------------------
@@ -1512,15 +1478,6 @@ env.AddCustomTarget(
     title="Upload Filesystem Image",
     description="Build (`buildfs`) and flash a LittleFS image to the "
                 "VFS1 partition. Does NOT touch the app/boot images.",
-)
-
-env.AddCustomTarget(
-    name="ameba-clean",
-    dependencies=None,
-    actions=clean_all,
-    title="Clean All (ameba-rtos + .pio/)",
-    description=f"Delete both {{PROJECT_DIR}}/build_<SOC>/ "
-                "and PIO's .pio/ cache",
 )
 
 # `pio run` default
