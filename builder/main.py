@@ -12,6 +12,7 @@ This keeps `build_<SOC>/` inside the user's project, preserves absolute paths
 for GCC errors, and safely handles parallel multi-env builds.
 """
 
+import json
 import os
 import shutil
 import sys
@@ -43,7 +44,9 @@ def _find_sdk_dir():
     Lookup priority:
       1. ``$AMEBA_SDK_DIR`` env var (developer override, e.g. local fork)
       2. PIO-managed package path via PioPlatform().get_package_dir()
-      3. Well-known dev locations (legacy / convenience for in-tree work)
+      3. Hardcoded ~/.platformio/packages/framework-ameba-rtos as
+         a last-resort fallback (covers the case where PioPlatform is
+         not available, e.g. tools running outside PIO context)
 
     Falls back with a clear error message if none found.
     """
@@ -59,12 +62,10 @@ def _find_sdk_dir():
         # PIO not available in this context (e.g. unit tests); fall through
         pass
 
-    # Legacy / dev convenience paths
-    candidates += [
-        os.path.expanduser("~/projects/ameba-platformio-research/repos/ameba-rtos"),
-        os.path.expanduser("~/projects/ameba-rtos"),
-        os.path.expanduser("~/.platformio/packages/framework-ameba-rtos"),
-    ]
+    # Hardcoded standard PIO package location (last resort).
+    candidates.append(
+        os.path.expanduser("~/.platformio/packages/framework-ameba-rtos")
+    )
 
     for candidate in candidates:
         if candidate and isdir(candidate) and isfile(join(candidate, "ameba.py")):
@@ -232,14 +233,44 @@ def _ensure_extern_project_layout():
                 " *\n"
                 " * Define `void user_main(void)`; the auto-generated\n"
                 " * app_example/app_main.c calls it during SDK startup.\n"
-                " * Replace with your own logic.\n"
+                " *\n"
+                " * IMPORTANT: user_main() runs ON THE SDK'S MAIN TASK and\n"
+                " * MUST RETURN promptly. The SDK still has work to do after\n"
+                " * us — atcmd service, lwIP, Wi-Fi driver init — none of\n"
+                " * which can run if user_main() blocks.\n"
+                " *\n"
+                " * For any persistent work (loops, blinking, network I/O):\n"
+                " *   1. xTaskCreate() a worker function\n"
+                " *   2. let user_main() return\n"
+                " *   3. SDK takes over and your task runs alongside it\n"
+                " *\n"
+                " * Doing `while (1) { ... }` directly inside user_main()\n"
+                " * will hang the boot — atcmd won't come up, monitor stays\n"
+                " * silent, and you'll waste an hour debugging.\n"
                 " */\n"
                 "\n"
-                "#include <stdio.h>\n"
+                "#include \"ameba_soc.h\"\n"
+                "#include \"FreeRTOS.h\"\n"
+                "#include \"task.h\"\n"
+                "\n"
+                "static void blink_task(void *param)\n"
+                "{\n"
+                "    (void)param;\n"
+                "    int tick = 0;\n"
+                "    while (1) {\n"
+                "        DiagPrintf(\"[ameba] tick=%d\\n\", tick++);\n"
+                "        vTaskDelay(pdMS_TO_TICKS(2000));\n"
+                "    }\n"
+                "}\n"
                 "\n"
                 "void user_main(void)\n"
                 "{\n"
-                "    printf(\"[ameba] hello from src/main.c\\n\");\n"
+                "    DiagPrintf(\"[ameba] hello from src/main.c\\n\");\n"
+                "\n"
+                "    /* Spin up persistent work on its own task and RETURN\n"
+                "     * so the SDK can finish bring-up. */\n"
+                "    xTaskCreate(blink_task, \"blink\", 256, NULL,\n"
+                "                tskIDLE_PRIORITY + 1, NULL);\n"
                 "}\n"
             )
         print(f"[ameba] created {starter}")
@@ -342,8 +373,11 @@ def _make_sdk_env():
     """Build os.environ for subprocess calls into ameba.py.
 
     Sets:
-      * RTK_TOOLCHAIN_DIR -> PIO platform cache (so toolchain auto-fetch
-        survives across projects)
+      * RTK_TOOLCHAIN_DIR -> ~/rtk-toolchain by default. This matches the
+        SDK's own default, so `pio run` and standalone `ameba.py build`
+        share a single ~5GB toolchain cache instead of duplicating it.
+        Override with $RTK_TOOLCHAIN_DIR if you need to relocate (e.g.
+        disk-full migration to another drive).
       * TARGET_SOC -> bypasses soc_info.json; per-env safe
       * VIRTUAL_ENV + PATH -> SDK venv first (json5/elftools), then
         prebuilts cmake/ninja, then system PATH
@@ -352,9 +386,11 @@ def _make_sdk_env():
     """
     sdk_env = os.environ.copy()
 
-    sdk_env["RTK_TOOLCHAIN_DIR"] = join(
-        platform.get_dir(), ".cache", "rtk-toolchain"
-    )
+    # Default to the SDK's own convention (~/rtk-toolchain) so users who
+    # run `ameba.py build` directly AND use PIO get one shared toolchain
+    # cache instead of duplicate ~1GB downloads.
+    if "RTK_TOOLCHAIN_DIR" not in sdk_env:
+        sdk_env["RTK_TOOLCHAIN_DIR"] = os.path.expanduser("~/rtk-toolchain")
     os.makedirs(sdk_env["RTK_TOOLCHAIN_DIR"], exist_ok=True)
 
     # TARGET_SOC env var takes precedence over soc_info.json inside
@@ -472,6 +508,114 @@ def _export_compile_commands():
 
 
 # -----------------------------------------------------------------------------
+# pio check support: feed CPPPATH/CPPDEFINES from compile_commands.json into
+# PIO's build env so cppcheck/clang-tidy can resolve SDK headers and macros.
+# -----------------------------------------------------------------------------
+#
+# Why this is needed: PIO core's `pio check` reads CPPPATH/CPPDEFINES/CCFLAGS
+# from the build environment via `load_build_metadata()` (see
+# platformio/check/tools/base.py:_load_cpp_data). Black-box vendor-CLI
+# platforms like ours run `subprocess.call("ameba.py build")` and never feed
+# any -I/-D flags into PIO's SCons env. Result: `pio check` sees
+# `includes={"build": [], "compatlib": [], "toolchain": []}` and reports
+# every SDK function as `unknownTypeName` / `cannotFindIncludeFile`.
+#
+# Fix: parse the compile_commands.json that the SDK already emits during
+# `pio run`, extract every -I path and -D macro, dedupe, and AppendUnique
+# them to env. cppcheck/clang-tidy then resolve SDK headers correctly.
+#
+# espressif32 does this implicitly via its espidf.py framework script
+# (`env.AppendUnique(CPPPATH=app_includes["plain_includes"])`) — same pattern,
+# different data source (CMake File API vs compile_commands.json).
+def _inject_check_metadata():
+    """Parse compile_commands.json and inject CPPPATH/CPPDEFINES into env.
+
+    Called from build_firmware() after _export_compile_commands(). On `pio
+    check` the user must `pio run` at least once first; otherwise this is
+    a no-op with a helpful warning.
+
+    We sample a single representative entry rather than walking all 600+
+    entries: every TU compiled by the SDK uses the same global -I and -D
+    set (it's a CMake `target_include_directories` PUBLIC fan-out), so
+    sampling one is correct and ~50x faster than aggregating all.
+    """
+    # Look in both standard locations: .pio/build/<env>/ (PIO standard) and
+    # PROJECT_DIR/ (where we ALSO copy it for VSCode auto-discovery — see
+    # _export_compile_commands). On a fresh `pio check` after the user has
+    # done `pio run -t clean`, the .pio path is gone but PROJECT_DIR's copy
+    # is sticky — fall back to it.
+    cc_path = join(PROJECT_BUILD_DIR, "compile_commands.json")
+    if not isfile(cc_path):
+        cc_path = join(PROJECT_DIR, "compile_commands.json")
+    if not isfile(cc_path):
+        # First-ever pio check — build hasn't run.
+        return
+
+    try:
+        with open(cc_path, "r", encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except (OSError, ValueError) as ex:
+        print(f"[ameba] pio check: failed to read {cc_path} ({ex}); "
+              "cppcheck will lack SDK includes")
+        return
+
+    if not entries:
+        return
+
+    # Find the longest-command entry — cmake-emitted compile_commands has
+    # bootstrap entries (e.g. preprocessor checks) with abbreviated flags.
+    # The TU entries are the longest; sampling them gets the full -I/-D set.
+    sample = max(entries, key=lambda e: len(e.get("command",
+                                                   " ".join(e.get("arguments", [])))))
+    cmdline = sample.get("command") or " ".join(sample.get("arguments", []))
+
+    # Tokenize. shlex handles quoted paths correctly (rare on linux but
+    # safer than split-by-space).
+    import shlex
+    try:
+        tokens = shlex.split(cmdline)
+    except ValueError:
+        tokens = cmdline.split()
+
+    includes, defines = [], []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        # -I<path>  OR  -I <path>
+        if tok == "-I" and i + 1 < len(tokens):
+            includes.append(tokens[i + 1]); i += 2; continue
+        if tok.startswith("-I"):
+            includes.append(tok[2:]); i += 1; continue
+        # -isystem <path>  (treat as include too)
+        if tok == "-isystem" and i + 1 < len(tokens):
+            includes.append(tokens[i + 1]); i += 2; continue
+        # -D<macro>  OR  -D <macro>
+        if tok == "-D" and i + 1 < len(tokens):
+            defines.append(tokens[i + 1]); i += 2; continue
+        if tok.startswith("-D"):
+            defines.append(tok[2:]); i += 1; continue
+        i += 1
+
+    # Dedupe while preserving order (insertion-ordered dict).
+    includes = list(dict.fromkeys(includes))
+    defines = list(dict.fromkeys(defines))
+
+    # PIO's CPPDEFINES wants either ["MACRO"] or [("MACRO", "value")].
+    # Translate "FOO=bar" → ("FOO", "bar"), "FOO" → "FOO".
+    cppdefines = []
+    for d in defines:
+        if "=" in d:
+            k, v = d.split("=", 1)
+            cppdefines.append((k, v))
+        else:
+            cppdefines.append(d)
+
+    env.AppendUnique(CPPPATH=includes, CPPDEFINES=cppdefines)
+    print(f"[ameba] pio check: injected {len(includes)} include path(s), "
+          f"{len(cppdefines)} define(s) from compile_commands.json")
+
+
+# -----------------------------------------------------------------------------
 # Builders
 # -----------------------------------------------------------------------------
 def build_firmware(*_args, **_kwargs):
@@ -569,9 +713,15 @@ def _resolve_arm_size_tool():
     The SDK auto-fetches the toolchain into ${RTK_TOOLCHAIN_DIR}/asdk-<version>/
     on first build. We glob for any `asdk-*/linux/newlib/bin/arm-none-eabi-size`.
     Returns None if not yet fetched (size report will silently no-op until then).
+
+    Search order matches _make_sdk_env(): $RTK_TOOLCHAIN_DIR override first,
+    then the SDK default ~/rtk-toolchain.
     """
     import glob
-    cache_root = join(platform.get_dir(), ".cache", "rtk-toolchain")
+    cache_root = (
+        os.environ.get("RTK_TOOLCHAIN_DIR")
+        or os.path.expanduser("~/rtk-toolchain")
+    )
     candidates = sorted(glob.glob(
         join(cache_root, "asdk-*", "linux", "newlib", "bin", "arm-none-eabi-size")
     ))
@@ -962,6 +1112,286 @@ def upload_firmware(*_args, **_kwargs):
             env.Exit(rc)
 
 
+def erase_flash(*_args, **_kwargs):
+    """Full chip erase + reflash via `ameba.py flash --chip-erase`.
+
+    Wired up as `pio run -t erase`. End-to-end behavior:
+      1. Wipe the entire SPI flash (boot + app + vfs + user partitions)
+      2. Reflash the current project's boot.bin + app.bin
+      3. Board reboots into the freshly-flashed firmware
+
+    Use cases:
+      - Recover from a corrupted partition table or stuck OTA state
+      - Force a clean install when board_upload.chip_erase=yes feels too
+        magical to put in platformio.ini
+
+    Honors the same port/baud/memory_type/remote-server settings as
+    upload_firmware().
+    """
+    import subprocess
+
+    sdk_env = _make_sdk_env()
+    upload_opts = {"chip-erase": True}
+
+    # Re-use upload's port/baud/memory-type knobs so erase respects whatever
+    # the user already configured in platformio.ini / board JSON.
+    port = env.subst("$UPLOAD_PORT") or board.get("upload.port", "")
+    if port:
+        upload_opts["port"] = port
+
+    speed = env.subst("$UPLOAD_SPEED") or board.get("upload.speed", "")
+    if speed:
+        upload_opts["baudrate"] = speed
+
+    memory_type = (
+        env.GetProjectOption("board_upload.memory_type", None)
+        or board.get("upload.memory_type", None)
+    )
+    if memory_type:
+        upload_opts["memory-type"] = memory_type
+
+    print(f"[ameba] CHIP ERASE + RE-FLASH SoC={SOC} "
+          "(full flash wipe followed by reflash of current project images)")
+    for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
+        print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+        # ameba.py flash exits with rc=0 even when its internal flash thread
+        # reports "Finished FAIL: ErrType.XXX" (the Python main() function
+        # never propagates the thread's failure to sys.exit). To catch this
+        # we capture stdout and grep for the failure marker. False negatives
+        # here = silent failures the user only finds out when their next
+        # `pio device monitor` shows the firmware is unchanged.
+        result = subprocess.run(
+            cmd, cwd=PROJECT_DIR, env=sdk_env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True,
+        )
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+        if result.returncode != 0:
+            env.Exit(result.returncode)
+            return
+        if "Finished FAIL" in result.stdout or "Finished PASS" not in result.stdout:
+            print(
+                "\n[ameba] ERROR: erase did NOT complete.\n"
+                "  Common causes:\n"
+                "    1. Board not in download mode. Try this sequence:\n"
+                "         a) start `pio run -t erase`\n"
+                "         b) when you see 'Check supported flash size...',\n"
+                "            press the board's RESET button\n"
+                "       Auto-reset via DTR/RTS only works on USB-UART chips\n"
+                "       that wire those pins to the board's reset (CP2102,\n"
+                "       CH340). PL2303 typically does NOT, so manual reset\n"
+                "       is needed.\n"
+                "    2. Serial port held by another process — make sure no\n"
+                "       `pio device monitor` is running on this port.\n"
+                "    3. eFuse read failure — try a hardware reset and retry."
+            )
+            env.Exit(1)
+            return
+
+
+def _resolve_vfs_region():
+    """Locate the VFS1 region in the SDK's default partition layout.
+
+    Returns dict {start_addr, end_addr, size, label} or None if no VFS1
+    region exists in the current partition table (= user has disabled
+    VFS in menuconfig, or this SoC family doesn't ship one).
+
+    Caller responsible for env.Exit() on None — we just report.
+    """
+    images = _resolve_default_layout()
+    if images is None:
+        return None
+    for img in images:
+        if img.get("type") == "VFS1":
+            size = img["end_addr"] - img["start_addr"] + 1
+            return {
+                "start_addr": img["start_addr"],
+                "end_addr": img["end_addr"],
+                "size": size,
+                "label": img["label"],
+            }
+    return None
+
+
+def build_fs_image(*_args, **_kwargs):
+    """Build a LittleFS image from PROJECT_DIR/data/.
+
+    Wired up as `pio run -t buildfs`. Output goes to
+    $BUILD_DIR/firmware_fs.bin (matches espressif32 naming).
+
+    Block size is hardcoded at 4096 — Ameba flash sectors are 4 KB and
+    the SDK's mount-littlefs code path assumes that. block_count is
+    derived from the VFS1 partition size declared in the SDK's flash
+    layout (live-parsed via flashcfg_parser, so menuconfig changes are
+    honored automatically).
+
+    Filesystem choice: LittleFS only. SDK's vfs.py supports fatfs too,
+    but Ameba's runtime VFS adapter favors LittleFS and that's what
+    most users actually use. fatfs support is one CLI flag away if a
+    user asks (pass `-t fatfs` instead), but we don't expose that until
+    there's demand.
+    """
+    import subprocess
+
+    # 1. Validate filesystem type (only littlefs supported for now)
+    fs_type = (env.GetProjectOption("board_build.filesystem", "littlefs")
+               or "littlefs").lower()
+    if fs_type != "littlefs":
+        print(f"[ameba] ERROR: board_build.filesystem={fs_type!r} not "
+              "supported. Only 'littlefs' works at the moment "
+              "(SDK's vfs.py also supports fatfs but we haven't exposed it; "
+              "open an issue if you need it).")
+        env.Exit(1)
+        return
+
+    # 2. Validate data dir exists and has files
+    data_dir = join(PROJECT_DIR, "data")
+    if not isdir(data_dir):
+        print(f"[ameba] ERROR: data/ directory not found at {data_dir}. "
+              "Create it and put files there for buildfs to pack.")
+        env.Exit(1)
+        return
+
+    file_count = sum(len(files) for _, _, files in os.walk(data_dir))
+    if file_count == 0:
+        print(f"[ameba] WARNING: data/ is empty; will produce an empty "
+              "LittleFS image (just metadata).")
+
+    # 3. Resolve VFS1 partition geometry
+    region = _resolve_vfs_region()
+    if region is None:
+        print("[ameba] ERROR: no VFS1 region in current partition layout. "
+              "Either:\n"
+              "  - This SoC family doesn't ship VFS by default (rare)\n"
+              "  - VFS is disabled in menuconfig — re-enable via "
+              "`pio run -t menuconfig` -> Flash Layout\n"
+              "  - You haven't built once yet (run `pio run` first to "
+              "generate the layout config)")
+        env.Exit(1)
+        return
+
+    BLOCK_SIZE = 4096  # Ameba flash sector size, NOT user-configurable
+    block_count = region["size"] // BLOCK_SIZE
+
+    if block_count < 4:
+        print(f"[ameba] ERROR: VFS1 region too small "
+              f"({region['size']} bytes / {block_count} blocks); "
+              "LittleFS needs at least 4 blocks. "
+              "Resize the partition via menuconfig.")
+        env.Exit(1)
+        return
+
+    # 4. Run vfs.py
+    out_path = join(PROJECT_BUILD_DIR, "firmware_fs.bin")
+    os.makedirs(PROJECT_BUILD_DIR, exist_ok=True)
+    vfs_py = join(SDK_DIR, "tools", "image_scripts", "vfs.py")
+    if not isfile(vfs_py):
+        print(f"[ameba] ERROR: vfs.py not found at {vfs_py}. "
+              "SDK layout may have changed.")
+        env.Exit(1)
+        return
+
+    sdk_python = join(SDK_DIR, ".venv", "bin", "python3")
+    if not isfile(sdk_python):
+        print(f"[ameba] ERROR: SDK venv not found at {sdk_python}. "
+              "Run `pio run` once first to provision it.")
+        env.Exit(1)
+        return
+
+    cmd = [
+        sdk_python, vfs_py,
+        "-t", "LITTLEFS",  # vfs.py argparse choices = ['LITTLEFS', 'FATFS'] (uppercase)
+        "-s", str(BLOCK_SIZE),
+        "-c", str(block_count),
+        "-dir", data_dir,
+        "-out", out_path,
+    ]
+    print(f"[ameba] buildfs SoC={SOC} fs=littlefs "
+          f"region=0x{region['start_addr']:08X}-0x{region['end_addr']:08X} "
+          f"({region['size']} bytes / {block_count} blocks)")
+    print(f"[ameba] $ {' '.join(cmd)}")
+    rc = subprocess.call(cmd)
+    if rc != 0:
+        print(f"[ameba] vfs.py failed (rc={rc})")
+        env.Exit(rc)
+        return
+
+    out_size = os.path.getsize(out_path)
+    print(f"[ameba] built {out_path} ({out_size} bytes, "
+          f"{file_count} source files)")
+
+
+def upload_fs_image(*_args, **_kwargs):
+    """Flash the LittleFS image to the VFS1 partition.
+
+    Wired up as `pio run -t uploadfs`. Depends on buildfs producing
+    $BUILD_DIR/firmware_fs.bin. Calls ameba.py flash with a single
+    `-i firmware_fs.bin <start> <end>` triple — note this REPLACES
+    the default partition table (unlike upload_firmware which uses
+    extra_images for additive flashing).
+    """
+    import subprocess
+
+    fs_bin = join(PROJECT_BUILD_DIR, "firmware_fs.bin")
+    if not isfile(fs_bin):
+        print(f"[ameba] ERROR: {fs_bin} not found. "
+              "Run `pio run -t buildfs` first.")
+        env.Exit(1)
+        return
+
+    region = _resolve_vfs_region()
+    if region is None:
+        print("[ameba] ERROR: cannot resolve VFS1 region; "
+              "run `pio run` once to populate the SDK build dir.")
+        env.Exit(1)
+        return
+
+    fs_size = os.path.getsize(fs_bin)
+    if fs_size > region["size"]:
+        print(f"[ameba] ERROR: firmware_fs.bin is {fs_size} bytes but "
+              f"VFS1 partition is only {region['size']} bytes. "
+              "Either shrink data/ or grow the VFS1 partition in "
+              "menuconfig -> Flash Layout.")
+        env.Exit(1)
+        return
+
+    sdk_env = _make_sdk_env()
+    upload_opts = {
+        "image": [[
+            fs_bin,
+            hex(region["start_addr"]),
+            hex(region["end_addr"]),
+        ]],
+    }
+
+    # Mirror upload_firmware()'s port/baud/memory_type plumbing.
+    port = env.subst("$UPLOAD_PORT") or board.get("upload.port", "")
+    if port:
+        upload_opts["port"] = port
+
+    speed = env.subst("$UPLOAD_SPEED") or board.get("upload.speed", "")
+    if speed:
+        upload_opts["baudrate"] = speed
+
+    memory_type = (
+        env.GetProjectOption("board_upload.memory_type", None)
+        or board.get("upload.memory_type", None)
+    )
+    if memory_type:
+        upload_opts["memory-type"] = memory_type
+
+    print(f"[ameba] uploadfs SoC={SOC} "
+          f"-> 0x{region['start_addr']:08X}-0x{region['end_addr']:08X} "
+          f"({fs_size}/{region['size']} bytes used)")
+    for cmd in _ameba_py_args("flash", soc=SOC, upload_opts=upload_opts):
+        print(f"[ameba] $ (cwd={PROJECT_DIR}) {' '.join(cmd)}")
+        rc = subprocess.call(cmd, cwd=PROJECT_DIR, env=sdk_env)
+        if rc != 0:
+            env.Exit(rc)
+            return
+
+
 def run_menuconfig(*_args, **_kwargs):
     import subprocess
 
@@ -1035,6 +1465,36 @@ env.AddCustomTarget(
     title="Menuconfig",
     description="Run interactive Kconfig menuconfig (delegates to "
                 "`ameba.py menuconfig <SOC>`)",
+)
+
+env.AddCustomTarget(
+    name="erase",
+    dependencies=None,
+    actions=erase_flash,
+    title="Erase Flash + Reflash",
+    description="Wipe the entire SPI flash (boot + app + vfs + user) "
+                "then reflash the current project's boot.bin + app.bin. "
+                "The board reboots into the freshly-flashed firmware.",
+)
+
+env.AddCustomTarget(
+    name="buildfs",
+    dependencies=None,
+    actions=build_fs_image,
+    title="Build Filesystem Image",
+    description="Pack PROJECT_DIR/data/ into a LittleFS image at "
+                "$BUILD_DIR/firmware_fs.bin sized to the SDK's VFS1 "
+                "partition. Requires `pio run` to have run once "
+                "(needs the partition layout).",
+)
+
+env.AddCustomTarget(
+    name="uploadfs",
+    dependencies=None,
+    actions=[build_fs_image, upload_fs_image],
+    title="Upload Filesystem Image",
+    description="Build (`buildfs`) and flash a LittleFS image to the "
+                "VFS1 partition. Does NOT touch the app/boot images.",
 )
 
 env.AddCustomTarget(
@@ -1116,3 +1576,16 @@ env.Replace(
     PROGNAME="firmware",
     PROGSUFFIX=".elf",
 )
+
+# -----------------------------------------------------------------------------
+# Module-level: inject CPPPATH/CPPDEFINES from a previous build's
+# compile_commands.json so `pio check` (run WITHOUT a build prefix) can find
+# SDK headers and macros.
+#
+# `pio check` only loads this builder script (it doesn't invoke build_firmware);
+# the call inside build_firmware is for the WITH-build flow where this script
+# also runs end-to-end. Both paths converge on the same in-memory env.
+# Caveat: first-ever `pio check` (no compile_commands.json yet) is a no-op +
+# warning. User runs `pio run` once, then check works on every subsequent run.
+# -----------------------------------------------------------------------------
+_inject_check_metadata()

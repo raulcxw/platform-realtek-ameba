@@ -47,6 +47,25 @@ pio run -t upload
 pio device monitor
 ```
 
+## Updating the SDK
+
+```bash
+pio pkg update -p framework-ameba-rtos
+```
+
+That's it — your next `pio run` will automatically refresh any new
+Python dependencies the SDK requires. No `source env.sh`, no manual
+`pip install`. The platform tracks `tools/requirements.txt` by
+content hash and resyncs the SDK's `.venv` whenever the file changes.
+
+If you ever need to force a venv rebuild (e.g. after manually running
+`pip uninstall` inside the SDK venv):
+
+```bash
+rm ~/.platformio/packages/framework-ameba-rtos/.venv/.pio_requirements_sha256
+pio run
+```
+
 ## PIO feature support
 
 | Feature | Supported | Notes |

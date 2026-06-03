@@ -64,8 +64,46 @@ class RealtekamebaPlatform(PlatformBase):
         # blink/wifi builds actually need. Users who want those components can
         # ``cd ~/.platformio/packages/framework-ameba-rtos && git submodule
         # update --init component/audio`` (or similar) on demand.
-        self._ensure_ameba_rtos_package()
+        sdk_dir = self._ensure_ameba_rtos_package()
+
+        # ALWAYS resync the SDK's Python venv against the current
+        # tools/requirements.txt — separate concern from "is the SDK
+        # cloned?". This runs on every `pio run` (it's idempotent: hash
+        # match → ~10ms no-op). After `pio pkg update -p framework-ameba-rtos`
+        # this is what catches a changed requirements.txt and re-runs
+        # pip install --upgrade automatically.
+        #
+        # Also resolve the SDK that builder/main.py will actually use,
+        # in case its discovery priority differs from platform.py's
+        # (e.g. dev-tree fallback at ~/projects/.../repos/ameba-rtos
+        # taking precedence). The venv must live next to the SDK that
+        # builder will run ameba.py from, not where platform.py thinks
+        # it lives.
+        actual_sdk = self._resolve_active_sdk_dir(sdk_dir)
+        if actual_sdk:
+            self._setup_sdk_venv(actual_sdk)
+
         return super().configure_default_packages(variables, targets)
+
+    def _resolve_active_sdk_dir(self, package_sdk_dir):
+        """Mirror builder/main.py's _find_sdk_dir() lookup priority.
+
+        builder/main.py walks: AMEBA_SDK_DIR → PIO package dir.
+        We replicate that here so the venv install lands where the
+        active SDK actually lives. If they diverge we'd resync the
+        wrong venv and `pio run` would still fail with `Miss module: ...`.
+
+        Returns the first SDK path that has ameba.py at root, or None
+        as a last-ditch fallback (caller should print a warning).
+        """
+        candidates = [
+            os.environ.get("AMEBA_SDK_DIR", "").strip(),
+            package_sdk_dir,
+        ]
+        for c in candidates:
+            if c and os.path.isfile(os.path.join(c, "ameba.py")):
+                return c
+        return None
 
     def _ensure_ameba_rtos_package(self):
         """Clone ameba-rtos into the PIO package cache if not already there.
@@ -146,7 +184,7 @@ class RealtekamebaPlatform(PlatformBase):
         return pkg_dir
 
     def _setup_sdk_venv(self, sdk_dir):
-        """Create the SDK Python venv and pip-install tools/requirements.txt.
+        """Create / refresh the SDK Python venv to match tools/requirements.txt.
 
         The upstream ``ameba.py`` build pipeline relies on Python helpers
         (``axf2bin.py``, ``menuconfig.py``, etc.) that import third-party
@@ -163,11 +201,32 @@ class RealtekamebaPlatform(PlatformBase):
         creation + pip install non-interactively here so first ``pio run``
         works out of the box.
 
-        Idempotent: if the venv already has json5 importable, skip.
+        Idempotent strategy: SHA-256 fingerprint of ``tools/requirements.txt``
+        is stored at ``$SDK/.venv/.pio_requirements_sha256`` after each
+        successful install. On every ``pio run``, we re-hash the current
+        requirements.txt — if the hash matches the stamp, skip; if it
+        differs (SDK update changed deps, you edited the file, fresh
+        install), run ``pip install -r requirements.txt --upgrade`` so
+        new packages get installed and existing ones get upgraded.
+
+        This means: after ``pio pkg update -p framework-ameba-rtos``,
+        the user runs ``pio run`` and the venv resyncs automatically.
+        No ``source env.sh`` needed, no manual ``pip install``, no docs
+        the user has to remember.
+
+        Escape hatch for unusual cases (manual ``pip uninstall`` inside
+        the venv, etc.): delete the stamp file and the next ``pio run``
+        will reinstall::
+
+            rm $SDK/.venv/.pio_requirements_sha256
         """
+        import hashlib
+
         venv_dir = os.path.join(sdk_dir, ".venv")
         venv_python = os.path.join(venv_dir, "bin", "python3")
+        venv_pip = os.path.join(venv_dir, "bin", "pip")
         requirements = os.path.join(sdk_dir, "tools", "requirements.txt")
+        stamp_path = os.path.join(venv_dir, ".pio_requirements_sha256")
 
         if not os.path.isfile(requirements):
             sys.stderr.write(
@@ -176,44 +235,58 @@ class RealtekamebaPlatform(PlatformBase):
             )
             return
 
-        # Idempotency check: probe-import json5 in the existing venv.
-        if os.path.isfile(venv_python):
+        # Compute current requirements.txt fingerprint.
+        with open(requirements, "rb") as fh:
+            req_hash = hashlib.sha256(fh.read()).hexdigest()
+
+        # Idempotency: stamp matches AND venv interpreter exists → done.
+        # We re-check venv_python existence because a user might have
+        # `rm -rf .venv` while leaving the stamp behind (rare, but the
+        # check is cheap and the failure mode is annoying).
+        if os.path.isfile(venv_python) and os.path.isfile(stamp_path):
+            try:
+                with open(stamp_path, "r") as fh:
+                    if fh.read().strip() == req_hash:
+                        return  # venv healthy + requirements unchanged
+            except OSError:
+                pass  # stamp unreadable — fall through, reinstall
+
+        # Need to either create venv or refresh it.
+        venv_existed = os.path.isfile(venv_python)
+        if not venv_existed:
+            # Wipe a stale/partial venv before recreating.
+            if os.path.isdir(venv_dir):
+                shutil.rmtree(venv_dir)
+
+            sys.stderr.write(
+                f"[realtek-ameba] creating SDK venv at {venv_dir} and "
+                f"installing requirements (one-time, ~30 seconds)\n"
+            )
             try:
                 subprocess.check_call(
-                    [venv_python, "-c", "import json5"],
+                    [sys.executable, "-m", "venv", venv_dir],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
                 )
-                return  # venv already healthy
-            except (subprocess.CalledProcessError, OSError):
-                pass  # fall through, rebuild
-
-        sys.stderr.write(
-            f"[realtek-ameba] creating SDK venv at {venv_dir} and installing "
-            f"requirements (one-time, ~30 seconds)\n"
-        )
-
-        # Wipe a stale/partial venv before recreating.
-        if os.path.isdir(venv_dir):
-            shutil.rmtree(venv_dir)
-
-        try:
-            subprocess.check_call(
-                [sys.executable, "-m", "venv", venv_dir],
-                stdout=subprocess.DEVNULL,
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError(
+                    f"[realtek-ameba] failed to create SDK venv at {venv_dir}: {exc}"
+                ) from exc
+        else:
+            sys.stderr.write(
+                f"[realtek-ameba] tools/requirements.txt changed; "
+                f"refreshing SDK venv at {venv_dir}\n"
             )
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"[realtek-ameba] failed to create SDK venv at {venv_dir}: {exc}"
-            ) from exc
 
+        # Build pip install args. Use --upgrade so existing deps get bumped
+        # to the new version when SDK updates ship a tighter pin.
         # Use a domestic pip mirror by default for China-locale users (where
         # pypi.org timeouts are common). Override with $PIP_INDEX_URL upstream
         # if you want pypi.org or a private mirror.
         pip_args = [
-            os.path.join(venv_dir, "bin", "pip"),
+            venv_pip,
             "install",
             "--quiet",
+            "--upgrade",
             "-r",
             requirements,
         ]
@@ -230,6 +303,18 @@ class RealtekamebaPlatform(PlatformBase):
                 f"{exc.returncode}). Manual fix: cd {sdk_dir} && "
                 f"python -m venv .venv && .venv/bin/pip install -r {requirements}"
             ) from exc
+
+        # Write fingerprint AFTER successful install so a half-failed run
+        # leaves no stamp and the next pio run will retry.
+        try:
+            with open(stamp_path, "w") as fh:
+                fh.write(req_hash)
+                fh.write("\n")
+        except OSError as exc:
+            sys.stderr.write(
+                f"[realtek-ameba] WARN: could not write stamp file "
+                f"{stamp_path} ({exc}); next `pio run` will reinstall.\n"
+            )
 
     def _packages_dir(self):
         """Resolve ~/.platformio/packages/framework-ameba-rtos.
