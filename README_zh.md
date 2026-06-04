@@ -96,10 +96,14 @@ pio run
 ```
 
 首次编译会下载：
-- Ameba SDK（约 1.3 GB shallow clone）
+- Ameba **基础 SDK**（约 30 MB shallow clone —— Wi-Fi + BT，不含子模块）
 - asdk/vsdk 工具链（每族约 280 MB）到 `~/rtk-toolchain/`
 
-冷启动首次编译：约 10 分钟。之后增量编译：约 15 秒。
+冷启动首次编译：约 5 分钟。之后增量编译：约 15 秒。
+
+需要 **XDK** 高阶功能（AI 语音、TensorFlow Lite、UI/LVGL、音频）？
+在**首次编译前**设置 `AMEBA_SDK_EDITION=xdk` —— 详见下方
+[SDK 版本（基础 SDK vs XDK）](#sdk-版本基础-sdk-vs-xdk)。
 
 首次编译还会自动生成：
 - `src/main.c`（hello-world 模板，演示正确的 `xTaskCreate` 用法）
@@ -138,6 +142,51 @@ pio device monitor
 
 默认波特率 1.5 Mbps（Ameba LogUART 约定值）已写在板级 manifest 里。
 按 `Ctrl-C` 退出。
+
+## SDK 版本（基础 SDK vs XDK）
+
+Realtek 把 ameba-rtos 分成两个版本：
+
+| 版本 | 内容 | 首次下载 |
+|---|---|---|
+| **SDK**（默认） | Wi-Fi、蓝牙 —— 基础开发平台 | 约 30 MB |
+| **XDK**（扩展） | 在 SDK 基础上**额外包含** AI 语音、TensorFlow Lite（tflite_micro）、UI（LVGL）、音频 | 约 1.1 GB |
+
+大部分项目只需基础 SDK，所以默认就拉它。需要扩展版的话，**在首次编译前**
+设置环境变量（该选择只在 SDK 首次 clone 时生效一次）：
+
+```bash
+# Linux / macOS
+AMEBA_SDK_EDITION=xdk pio run
+
+# Windows (PowerShell)
+$env:AMEBA_SDK_EDITION="xdk"; pio run
+```
+
+```yaml
+# CI (GitHub Actions)
+- run: pio run
+  env:
+    AMEBA_SDK_EDITION: xdk
+```
+
+**已经拉了基础 SDK，后来想单独加某个组件？** 由于 edition 变量只在首次
+clone 时生效，直接补对应子模块即可（浅克隆）：
+
+```bash
+cd ~/.platformio/packages/framework-ameba-rtos
+git submodule update --init --depth 1 component/audio    # 或 component/ui 等
+```
+
+想把整个包从 SDK 整体切到 XDK，则重装：
+
+```bash
+pio pkg uninstall -g -p framework-ameba-rtos
+AMEBA_SDK_EDITION=xdk pio run
+```
+
+> 用 `$AMEBA_SDK_DIR` 指向本地 checkout 时，edition 变量被忽略 ——
+> 子模块由你在那个 checkout 里自行管理。
 
 ## 升级 SDK
 

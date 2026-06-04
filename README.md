@@ -96,10 +96,14 @@ pio run
 ```
 
 First-time build downloads:
-- The Ameba SDK (~1.3 GB shallow clone)
+- The Ameba **base SDK** (~30 MB shallow clone — Wi-Fi + BT, no submodules)
 - The asdk/vsdk toolchain (~280 MB per family) into `~/rtk-toolchain/`
 
-Cold first build: ~10 minutes. After that incremental builds: ~15 seconds.
+Cold first build: ~5 minutes. After that incremental builds: ~15 seconds.
+
+Need the high-level **XDK** features (AI voice, TensorFlow Lite, UI/LVGL,
+audio)? Set `AMEBA_SDK_EDITION=xdk` **before the first build** — see
+[SDK editions](#sdk-editions-base-sdk-vs-xdk) below.
 
 The first build also auto-creates `src/main.c` (a hello-world template
 showing the correct `xTaskCreate` pattern) and the SDK's required
@@ -139,6 +143,53 @@ pio device monitor
 
 Default baudrate 1.5 Mbps (Ameba LogUART convention) is preset on the
 supplied boards. Exit with `Ctrl-C`.
+
+## SDK editions (base SDK vs XDK)
+
+Realtek splits ameba-rtos into two editions:
+
+| Edition | Contents | First-time download |
+|---|---|---|
+| **SDK** (default) | Wi-Fi, Bluetooth — the base development platform | ~30 MB |
+| **XDK** (extended) | Everything in SDK **plus** AI voice, TensorFlow Lite (tflite_micro), UI (LVGL), audio | ~1.1 GB |
+
+Most projects only need the base SDK, so it is cloned by default. To get the
+extended edition, set the environment variable **before the first build**
+(the choice is consumed once, when the SDK is cloned):
+
+```bash
+# Linux / macOS
+AMEBA_SDK_EDITION=xdk pio run
+
+# Windows (PowerShell)
+$env:AMEBA_SDK_EDITION="xdk"; pio run
+```
+
+```yaml
+# CI (GitHub Actions)
+- run: pio run
+  env:
+    AMEBA_SDK_EDITION: xdk
+```
+
+**Already cloned the base SDK and want one extra component later?** The
+edition variable only acts at first clone, so add the submodule directly
+(shallow):
+
+```bash
+cd ~/.platformio/packages/framework-ameba-rtos
+git submodule update --init --depth 1 component/audio    # or component/ui, etc.
+```
+
+To switch the whole package from SDK to XDK after the fact, reinstall:
+
+```bash
+pio pkg uninstall -g -p framework-ameba-rtos
+AMEBA_SDK_EDITION=xdk pio run
+```
+
+> Pointing at a local checkout with `$AMEBA_SDK_DIR`? Then the edition
+> variable is ignored — you manage submodules in that checkout yourself.
 
 ## Updating the SDK
 

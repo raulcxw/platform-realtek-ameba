@@ -35,6 +35,21 @@ IS_WINDOWS = sys.platform.startswith("win")
 DEFAULT_SDK_GIT_URL = "https://github.com/Ameba-AIoT/ameba-rtos.git"
 DEFAULT_SDK_BRANCH = "master"
 
+# Shallow-clone depth. Mirrors Realtek's official download instructions
+# (`git clone --depth=5 ...`). A small buffer (>1) keeps shallow submodule
+# fetches robust when a recorded submodule SHA is a few commits behind the
+# branch tip.
+DEFAULT_SDK_DEPTH = 5
+
+# Realtek splits the upstream into two editions (per the official docs):
+#   - "sdk"  (default): base SDK — Wi-Fi + BT, no submodules (~30 MB).
+#   - "xdk"  (extended): adds the AI-voice / tflite_micro / UI(lvgl) / audio /
+#            speechmind submodules for high-level features (~1.1 GB).
+# Most users only need the base SDK, so it is the default. Opt into the
+# extended edition with $AMEBA_SDK_EDITION=xdk. The choice is consumed once,
+# at first clone (see _ensure_ameba_rtos_package).
+DEFAULT_SDK_EDITION = "sdk"
+
 # PIO expects ``framework-ameba-rtos`` as the package name to match
 # ``frameworks.ameba-rtos.package`` in platform.json.
 FRAMEWORK_PKG_NAME = "framework-ameba-rtos"
@@ -236,28 +251,49 @@ class RealtekamebaPlatform(PlatformBase):
         sdk_url = os.environ.get("AMEBA_SDK_GIT_URL", DEFAULT_SDK_GIT_URL)
         sdk_branch = os.environ.get("AMEBA_SDK_GIT_BRANCH", DEFAULT_SDK_BRANCH)
 
-        sys.stderr.write(
-            f"[realtek-ameba] First-time setup: cloning {sdk_url} "
-            f"(branch={sdk_branch}, no submodules) to {pkg_dir}\n"
-            f"[realtek-ameba] This is a one-time ~30 MB download, "
-            f"typically 2-5 minutes.\n"
-        )
+        edition = os.environ.get("AMEBA_SDK_EDITION", DEFAULT_SDK_EDITION).strip().lower()
+        if edition not in ("sdk", "xdk"):
+            raise RuntimeError(
+                f"AMEBA_SDK_EDITION={edition!r} is invalid; expected 'sdk' "
+                "(base: Wi-Fi + BT) or 'xdk' (extended: AI / tflite / UI / audio)."
+            )
+        want_xdk = edition == "xdk"
+
+        clone_args = [
+            "git",
+            "clone",
+            "--depth",
+            str(DEFAULT_SDK_DEPTH),
+            "--single-branch",
+            "--branch",
+            sdk_branch,
+        ]
+        if want_xdk:
+            # Extended edition: recurse into all submodules but keep them
+            # shallow (--shallow-submodules => depth 1 per submodule). This is
+            # better than Realtek's documented `--recursive --depth=5`, which
+            # pulls full submodule history.
+            clone_args += ["--recurse-submodules", "--shallow-submodules"]
+            sys.stderr.write(
+                f"[realtek-ameba] First-time setup: cloning {sdk_url} "
+                f"(branch={sdk_branch}, edition=XDK, all submodules) to {pkg_dir}\n"
+                f"[realtek-ameba] XDK includes AI-voice / tflite_micro / UI(lvgl) "
+                f"/ audio. This is a one-time ~1.1 GB download, "
+                f"typically 10-15 minutes.\n"
+            )
+        else:
+            clone_args += ["--no-recurse-submodules"]
+            sys.stderr.write(
+                f"[realtek-ameba] First-time setup: cloning {sdk_url} "
+                f"(branch={sdk_branch}, edition=SDK, no submodules) to {pkg_dir}\n"
+                f"[realtek-ameba] This is a one-time ~30 MB download, "
+                f"typically 2-5 minutes. For AI / tflite / UI / audio features, "
+                f"set $AMEBA_SDK_EDITION=xdk before the first build.\n"
+            )
+        clone_args += [sdk_url, pkg_dir]
 
         try:
-            subprocess.check_call(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--single-branch",
-                    "--branch",
-                    sdk_branch,
-                    "--no-recurse-submodules",
-                    sdk_url,
-                    pkg_dir,
-                ]
-            )
+            subprocess.check_call(clone_args)
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 f"[realtek-ameba] git clone of ameba-rtos SDK failed (exit "
@@ -440,9 +476,11 @@ class RealtekamebaPlatform(PlatformBase):
                 "Realtek official ameba-rtos SDK (RTL8710 / RTL8720 / RTL8721 "
                 "/ RTL8730 series). Ships with built-in CMake/Ninja build "
                 "system; PlatformIO drives it via the upstream ameba.py CLI. "
-                "Submodules (audio, ui, aivoice, tflite_micro, speechmind) "
-                "are NOT cloned by default — fetch them on demand with "
-                "`git submodule update --init <component>` inside the SDK."
+                "Base SDK (Wi-Fi + BT) is cloned by default; the extended XDK "
+                "submodules (audio, ui/lvgl, aivoice, tflite_micro, speechmind) "
+                "are omitted. Pull the whole XDK up front with "
+                "$AMEBA_SDK_EDITION=xdk, or add a single component on demand: "
+                "`git submodule update --init --depth 1 <component>` inside the SDK."
             ),
             "keywords": [
                 "framework",
