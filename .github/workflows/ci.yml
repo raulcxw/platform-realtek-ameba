@@ -61,11 +61,13 @@ jobs:
   # =========================================================================
   # Prefetch SDK + toolchain ONCE so the integration matrix below reuses the
   # same cache across all 3 boards. Without this, each matrix job would
-  # cold-clone the 1.5GB SDK + per-SoC toolchain independently.
+  # cold-clone the SDK + per-SoC toolchain independently.
   #
-  # On a real cold run this still takes ~10 min, but only ONCE per
+  # CI verifies the BASE SDK only (AMEBA_SDK_EDITION=sdk, ~30 MB). A cold run
+  # is ~5 min for the SDK plus the per-family toolchains, but only ONCE per
   # platform.json/platform.py change. Subsequent matrix jobs hit the cache
-  # in seconds.
+  # in seconds. The ~1.1 GB XDK edition (AI / tflite / UI / audio) will get
+  # its own job once its submodules are slimmed down.
   # =========================================================================
   prefetch:
     name: Prefetch SDK + toolchain
@@ -103,6 +105,9 @@ jobs:
       # so we must touch all 3 to populate fully.
       - name: Populate cache (cold only)
         if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          # Verify the base SDK only. XDK gets a dedicated job later.
+          AMEBA_SDK_EDITION: sdk
         run: |
           set -e
           for board in pke8721daf-c13-f10 pke8710ecf-c53-f20 pke8713ecm-va4-n43; do
@@ -173,6 +178,9 @@ jobs:
         env:
           TEST_BOARD: ${{ matrix.board }}
           PLATFORM_PATH: ${{ github.workspace }}
+          # Base SDK only (defensive: matters if the cache ever misses and
+          # `pio run` re-clones). XDK is verified in a separate job later.
+          AMEBA_SDK_EDITION: sdk
         run: ./tests/integration/${{ matrix.test }}.sh
 
       # Surface the install log on failure for debugging

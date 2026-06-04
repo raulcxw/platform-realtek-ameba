@@ -5,8 +5,9 @@
 #      triggers SDK clone + venv setup on first `pio run`.
 #
 # This is the "happy path" smoke for the install pipeline. Cold-cache
-# CI run will take ~10 minutes (SDK 1.5GB clone + ~280MB toolchain);
-# warm cache (after actions/cache hit) ~30 seconds.
+# CI run takes ~5 minutes (base SDK ~30MB clone + ~280MB toolchain);
+# warm cache (after actions/cache hit) ~30 seconds. Honors
+# $AMEBA_SDK_EDITION (default "sdk"); CI keeps it on the base SDK.
 #
 # Required env vars:
 #   TEST_BOARD       — board id, e.g. pke8721daf-c13-f10
@@ -76,7 +77,7 @@ echo "  ✓ project structure ready"
 
 echo
 echo "=== T01 step 3: first pio run (triggers SDK clone + venv + auto-skeleton) ==="
-echo "  This is the slow step (cold cache: ~10 min, warm: ~30s)"
+echo "  This is the slow step (cold cache: ~5 min base SDK, warm: ~30s)"
 echo "  Log: $LOG"
 
 cd "$PROJ"
