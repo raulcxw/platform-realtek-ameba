@@ -12,6 +12,7 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # Editor
 .vscode/
@@ -34,7 +35,14 @@ ARCH.md
 PROGRESS.md
 .hermes/
 
+# Local dev / AI-assistant context (not part of the published platform)
+.claude/
+CLAUDE.md
+
 # Test artifacts
 tests/.pytest_cache/
 tests/**/__pycache__/
 .test-venv/
+
+# pio pkg pack output
+*.tar.gz
